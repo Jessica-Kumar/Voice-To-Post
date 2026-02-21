@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+pydantic
+faiss-cpu
+sentence-transformers
+python-multipart
+httpx
+langchain
+langchain-google-genai
+google-generativeai
+python-dotenv
+sqlalchemy
+newsapi-python
+cryptography
+huggingface_hub
