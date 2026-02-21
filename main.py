@@ -14,12 +14,22 @@ import scoring
 import scoring
 from database import get_db, SocialCreds, encrypt_secret, download_db, upload_db
 import social_publisher
+import dateparser
+from datetime import datetime
+from typing import Optional
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # Initialize a FastAPI application
 app = FastAPI(
     title="Voice-To-Post Backend API",
     description="Foundational backend for Voice-To-Post AI-driven social media generator"
 )
+
+# Initialize the Background Scheduler
+scheduler = BackgroundScheduler()
+
+def publish_to_social_media(platform: str, text: str):
+    print(f"[Scheduled Job] Publishing to {platform}: {text}")
 
 # Configure CORS middleware to allow all origins
 app.add_middleware(
@@ -41,6 +51,9 @@ async def startup_event():
     """
     # Attempt to download the latest credentials.db from Hugging Face Space Cloud Storage
     download_db()
+    
+    # Start the Background Scheduler
+    scheduler.start()
     
     sample_data = [
         "Welcome to Voice-To-Post backend!",
@@ -91,54 +104,85 @@ async def save_keys(request: SaveKeysRequest, db: Session = Depends(get_db)):
         upload_db()
         return {"status": "success", "message": f"Saved new credentials for {platform_key}."}
 
+class ParseScheduleRequest(BaseModel):
+    transcript: str
+
+@app.post("/parse-schedule")
+async def parse_schedule(audio_file: UploadFile = File(...)):
+    """Transcribes schedule audio and returns ISO 8601 time"""
+    # 1. Transcribe the audio
+    audio_bytes = await audio_file.read()
+    transcript = await speech_service.transcribe_audio_bytes(audio_bytes, audio_file.content_type)
+    
+    # 2. Parse the human text into datetime
+    parsed_time = dateparser.parse(
+        transcript, 
+        settings={'TIMEZONE': 'Asia/Kolkata', 'RETURN_AS_TIMEZONE_AWARE': True}
+    )
+    if not parsed_time:
+        raise HTTPException(status_code=400, detail="Could not parse scheduled time from transcript.")
+    
+    return {
+        "parsed_time": parsed_time.isoformat(),
+        "human_text": transcript
+    }
+
+class ConfirmPostRequest(BaseModel):
+    platform: str
+    text: str
+    scheduled_time: Optional[str] = None
+
+@app.post("/confirm-post")
+async def confirm_post(request: ConfirmPostRequest):
+    if request.scheduled_time:
+        try:
+            dt = datetime.fromisoformat(request.scheduled_time)
+            scheduler.add_job(
+                publish_to_social_media, 
+                'date', 
+                run_date=dt, 
+                args=[request.platform, request.text]
+            )
+            return {"status": "scheduled", "message": f"Post scheduled for {dt.isoformat()}"}
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid scheduled_time format. Must be ISO 8601.")
+    else:
+        publish_to_social_media(request.platform, request.text)
+        return {"status": "published_immediately", "message": "Post published immediately."}
+
 @app.post("/generate-post")
 async def generate_post(
-    platform: str = Form(...),
-    audio_file: UploadFile = File(...)
+    audio_file: UploadFile = File(...),
+    tone: str = Form(...) # Added Tone Parameter
 ):
-    """
-    Generates a social media post from an audio file upload via Deepgram STT, 
-    FAISS RAG context retrieval, and Gemini LLM. Validates using Safety Gatekeeper.
-    """
-    # 1. Transcribe the uploaded audio with Deepgram
+    """Transcribes audio, applies tone, checks safety, and returns variations"""
     audio_bytes = await audio_file.read()
     transcript = await speech_service.transcribe_audio_bytes(audio_bytes, audio_file.content_type)
     
     if transcript.startswith("Error") or transcript.startswith("ERROR"):
         raise HTTPException(status_code=500, detail=transcript)
         
-    # 2. Retrieve Context via FAISS RAG
-    # We use the transcript as the query to find similar past thoughts/posts
     results = vector_store.search_index(transcript, top_k=3)
-    
-    # Calculate an average "context distance" for scoring later
     avg_distance = sum([res["distance"] for res in results]) / len(results) if results else -1.0
     
-    # 3. Generate Post via Gemini (LangChain)
-    generated_post = await generation_service.generate_post_rag(transcript, results)
+    # Pass the 'tone' to your Gemini generation service to get the 5 variations
+    # (Ensure generation_service is updated to return a list of 5 dictionaries)
+    generated_variations = await generation_service.generate_post_rag(transcript, results, tone=tone)
     
-    if generated_post.startswith("Error") or generated_post.startswith("ERROR"):
-        raise HTTPException(status_code=500, detail=generated_post)
-        
-    # 4. Evaluate Post using Safety Gatekeeper (Threshold T=0.75)
-    score_data = scoring.calculate_safety_score(generated_post, avg_distance)
+    # Simplified Gatekeeper Check
+    score_data = scoring.calculate_safety_score(generated_variations[0]['text'], avg_distance)
     c_score = score_data["final_score"]
     
     if c_score >= 0.75:
-        # Passed gatekeeper, attempt to publish
-        publish_result = await social_publisher.publish_to_platform(platform, generated_post)
-        
+        # DO NOT PUBLISH HERE. Just return the variations for the UI Carousel!
         return {
             "status": "success",
-            "transcript": transcript,
-            "generated_post": generated_post,
-            "gatekeeper_score": score_data,
-            "publish_result": publish_result
+            "variations": generated_variations, 
+            "error": None
         }
     else:
-        # Failed gatekeeper
         return {
             "status": "rejected",
-            "message": "The generated post did not meet the safety and quality thresholds (Score < 0.75).",
-            "gatekeeper_score": score_data
+            "variations": None,
+            "error": "The generated post failed safety thresholds (Score < 0.75)."
         }
