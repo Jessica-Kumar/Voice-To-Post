@@ -14,12 +14,22 @@ import scoring
 import scoring
 from database import get_db, SocialCreds, encrypt_secret, download_db, upload_db
 import social_publisher
+import dateparser
+from datetime import datetime
+from typing import Optional
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # Initialize a FastAPI application
 app = FastAPI(
     title="Voice-To-Post Backend API",
     description="Foundational backend for Voice-To-Post AI-driven social media generator"
 )
+
+# Initialize the Background Scheduler
+scheduler = BackgroundScheduler()
+
+def publish_to_social_media(platform: str, text: str):
+    print(f"[Scheduled Job] Publishing to {platform}: {text}")
 
 # Configure CORS middleware to allow all origins
 app.add_middleware(
@@ -41,6 +51,9 @@ async def startup_event():
     """
     # Attempt to download the latest credentials.db from Hugging Face Space Cloud Storage
     download_db()
+    
+    # Start the Background Scheduler
+    scheduler.start()
     
     sample_data = [
         "Welcome to Voice-To-Post backend!",
@@ -90,6 +103,46 @@ async def save_keys(request: SaveKeysRequest, db: Session = Depends(get_db)):
         # Upload sync to permanent HF Dataset
         upload_db()
         return {"status": "success", "message": f"Saved new credentials for {platform_key}."}
+
+class ParseScheduleRequest(BaseModel):
+    transcript: str
+
+@app.post("/parse-schedule")
+async def parse_schedule(request: ParseScheduleRequest):
+    parsed_time = dateparser.parse(
+        request.transcript, 
+        settings={'TIMEZONE': 'Asia/Kolkata', 'RETURN_AS_TIMEZONE_AWARE': True}
+    )
+    if not parsed_time:
+        raise HTTPException(status_code=400, detail="Could not parse scheduled time from transcript.")
+    
+    return {
+        "parsed_time": parsed_time.isoformat(),
+        "human_text": request.transcript
+    }
+
+class ConfirmPostRequest(BaseModel):
+    platform: str
+    text: str
+    scheduled_time: Optional[str] = None
+
+@app.post("/confirm-post")
+async def confirm_post(request: ConfirmPostRequest):
+    if request.scheduled_time:
+        try:
+            dt = datetime.fromisoformat(request.scheduled_time)
+            scheduler.add_job(
+                publish_to_social_media, 
+                'date', 
+                run_date=dt, 
+                args=[request.platform, request.text]
+            )
+            return {"status": "scheduled", "message": f"Post scheduled for {dt.isoformat()}"}
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid scheduled_time format. Must be ISO 8601.")
+    else:
+        publish_to_social_media(request.platform, request.text)
+        return {"status": "published_immediately", "message": "Post published immediately."}
 
 @app.post("/generate-post")
 async def generate_post(
