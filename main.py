@@ -108,9 +108,15 @@ class ParseScheduleRequest(BaseModel):
     transcript: str
 
 @app.post("/parse-schedule")
-async def parse_schedule(request: ParseScheduleRequest):
+async def parse_schedule(audio_file: UploadFile = File(...)):
+    """Transcribes schedule audio and returns ISO 8601 time"""
+    # 1. Transcribe the audio
+    audio_bytes = await audio_file.read()
+    transcript = await speech_service.transcribe_audio_bytes(audio_bytes, audio_file.content_type)
+    
+    # 2. Parse the human text into datetime
     parsed_time = dateparser.parse(
-        request.transcript, 
+        transcript, 
         settings={'TIMEZONE': 'Asia/Kolkata', 'RETURN_AS_TIMEZONE_AWARE': True}
     )
     if not parsed_time:
@@ -118,7 +124,7 @@ async def parse_schedule(request: ParseScheduleRequest):
     
     return {
         "parsed_time": parsed_time.isoformat(),
-        "human_text": request.transcript
+        "human_text": transcript
     }
 
 class ConfirmPostRequest(BaseModel):
@@ -146,52 +152,37 @@ async def confirm_post(request: ConfirmPostRequest):
 
 @app.post("/generate-post")
 async def generate_post(
-    platform: str = Form(...),
-    audio_file: UploadFile = File(...)
+    audio_file: UploadFile = File(...),
+    tone: str = Form(...) # Added Tone Parameter
 ):
-    """
-    Generates a social media post from an audio file upload via Deepgram STT, 
-    FAISS RAG context retrieval, and Gemini LLM. Validates using Safety Gatekeeper.
-    """
-    # 1. Transcribe the uploaded audio with Deepgram
+    """Transcribes audio, applies tone, checks safety, and returns variations"""
     audio_bytes = await audio_file.read()
     transcript = await speech_service.transcribe_audio_bytes(audio_bytes, audio_file.content_type)
     
     if transcript.startswith("Error") or transcript.startswith("ERROR"):
         raise HTTPException(status_code=500, detail=transcript)
         
-    # 2. Retrieve Context via FAISS RAG
-    # We use the transcript as the query to find similar past thoughts/posts
     results = vector_store.search_index(transcript, top_k=3)
-    
-    # Calculate an average "context distance" for scoring later
     avg_distance = sum([res["distance"] for res in results]) / len(results) if results else -1.0
     
-    # 3. Generate Post via Gemini (LangChain)
-    generated_post = await generation_service.generate_post_rag(transcript, results)
+    # Pass the 'tone' to your Gemini generation service to get the 5 variations
+    # (Ensure generation_service is updated to return a list of 5 dictionaries)
+    generated_variations = await generation_service.generate_post_rag(transcript, results, tone=tone)
     
-    if generated_post.startswith("Error") or generated_post.startswith("ERROR"):
-        raise HTTPException(status_code=500, detail=generated_post)
-        
-    # 4. Evaluate Post using Safety Gatekeeper (Threshold T=0.75)
-    score_data = scoring.calculate_safety_score(generated_post, avg_distance)
+    # Simplified Gatekeeper Check
+    score_data = scoring.calculate_safety_score(generated_variations[0]['text'], avg_distance)
     c_score = score_data["final_score"]
     
     if c_score >= 0.75:
-        # Passed gatekeeper, attempt to publish
-        publish_result = await social_publisher.publish_to_platform(platform, generated_post)
-        
+        # DO NOT PUBLISH HERE. Just return the variations for the UI Carousel!
         return {
             "status": "success",
-            "transcript": transcript,
-            "generated_post": generated_post,
-            "gatekeeper_score": score_data,
-            "publish_result": publish_result
+            "variations": generated_variations, 
+            "error": None
         }
     else:
-        # Failed gatekeeper
         return {
             "status": "rejected",
-            "message": "The generated post did not meet the safety and quality thresholds (Score < 0.75).",
-            "gatekeeper_score": score_data
+            "variations": None,
+            "error": "The generated post failed safety thresholds (Score < 0.75)."
         }
