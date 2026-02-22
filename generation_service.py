@@ -11,7 +11,7 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 
 # Initialize Gemini with a higher temperature for variety in the 5 variations
 llm = ChatGoogleGenerativeAI(
-    model="gemini-1.5-flash", 
+    model="gemini-pro", 
     google_api_key=GEMINI_API_KEY,
     temperature=0.8,
     convert_system_message_to_human=True # Helps with older API compatibility
