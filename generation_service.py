@@ -13,7 +13,8 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 llm = ChatGoogleGenerativeAI(
     model="gemini-1.5-flash", 
     google_api_key=GEMINI_API_KEY,
-    temperature=0.8 
+    temperature=0.8,
+    convert_system_message_to_human=True # Helps with older API compatibility
 )
 
 # UPGRADED PROMPT: Now requests 5 variations in a specific JSON format
