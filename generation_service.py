@@ -76,3 +76,12 @@ async def generate_post_rag(transcript: str, retrieved_context: list, tone: str)
     except Exception as e:
         print(f"RAG Error: {e}")
         return [{"text": f"Error generating posts: {str(e)}"}]
+
+
+def format_context(vector_results: list) -> str:
+    """Helper formatting function for the search results"""
+    if not vector_results:
+        return "No specific past context found."
+        
+    context_lines = [f"- {res['text']}" for res in vector_results]
+    return "\n".join(context_lines)
