@@ -25,9 +25,8 @@ Goal: Generate exactly 5 distinct social media post variations.
 
 Security & Quality Rules:
 1. Tone: Match the '{tone}' style perfectly.
-2. Safety: Ensure content passes a 0.75 safety threshold.
-3. Format: Return ONLY a valid JSON array of objects.
-4. No pre-text or post-text.
+2. Safety: Ensure content is professional and safe.
+3. Audit: Before returning, review your work to ensure it passes high quality standards.
 
 Context:
 {context}
@@ -35,11 +34,13 @@ Context:
 Raw Thoughts (Transcript):
 {transcript}
 
-Structure:
+Return the response ONLY as a valid JSON array of objects with this structure:
 [
-  {{"text": "variation 1 content"}},
-  {{"text": "variation 2 content"}},
-  ...
+  {{"text": "post variation 1 content"}},
+  {{"text": "post variation 2 content"}},
+  {{"text": "post variation 3 content"}},
+  {{"text": "post variation 4 content"}},
+  {{"text": "post variation 5 content"}}
 ]"""
 )
 
