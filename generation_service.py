@@ -19,28 +19,27 @@ llm = ChatGoogleGenerativeAI(
 
 # UPGRADED PROMPT: Now requests 5 variations in a specific JSON format
 POST_GENERATION_PROMPT = PromptTemplate.from_template(
-    """You are an expert social media manager and a strict safety auditor. 
+    """You are an expert social media manager and safety auditor. 
 
-Goal: Generate exactly 5 distinct social media post variations.
+**Goal**: Generate exactly 5 distinct social media post variations.
 
-Security & Quality Rules:
-1. Tone: Match the '{tone}' style perfectly.
-2. Safety: Ensure content is professional and safe.
-3. Audit: Before returning, review your work to ensure it passes high quality standards.
+**Target Tone**: {tone}
+**Context**: {context}
+**Raw Thoughts**: {transcript}
 
-Context:
-{context}
+**Security & Scoring Requirements (CRITICAL)**:
+1. **Safety**: Avoid forbidden terms like "spam", "hate", "violence", or "scam" to maintain a 1.0 safety score.
+2. **Engagement**: Include at least one hashtag (#) and one emoji (like 🚀, 💡, or 🔥) in every post to maximize the engagement score.
+3. **Relevance**: Ensure content is strictly related to the provided context and transcript.
+4. **Self-Audit**: Before returning JSON, verify that each post would pass a 0.75 safety threshold.
 
-Raw Thoughts (Transcript):
-{transcript}
-
-Return the response ONLY as a valid JSON array of objects with this structure:
+Return ONLY a valid JSON array of objects:
 [
-  {{"text": "post variation 1 content"}},
-  {{"text": "post variation 2 content"}},
-  {{"text": "post variation 3 content"}},
-  {{"text": "post variation 4 content"}},
-  {{"text": "post variation 5 content"}}
+  {{"text": "variation 1 content"}},
+  {{"text": "variation 2 content"}},
+  {{"text": "variation 3 content"}},
+  {{"text": "variation 4 content"}},
+  {{"text": "variation 5 content"}}
 ]"""
 )
 
