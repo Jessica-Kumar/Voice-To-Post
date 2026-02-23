@@ -19,22 +19,28 @@ llm = ChatGoogleGenerativeAI(
 
 # UPGRADED PROMPT: Now requests 5 variations in a specific JSON format
 POST_GENERATION_PROMPT = PromptTemplate.from_template(
-    """You are an expert social media manager and a Strict Security Auditor.
+    """You are an expert social media manager and a strict safety auditor. 
 
-Goal: Generate exactly 5 distinct social media post variations based on the transcript.
+Goal: Generate exactly 5 distinct social media post variations.
 
-Audit Instructions:
+Security & Quality Rules:
+1. Tone: Match the '{tone}' style perfectly.
+2. Safety: Ensure content passes a 0.75 safety threshold.
+3. Format: Return ONLY a valid JSON array of objects.
+4. No pre-text or post-text.
 
-Tone Validation: Every post must match the '{tone}' tone perfectly.
+Context:
+{context}
 
-Security Check: Do not include any text that is offensive, harmful, or unprofessional.
+Raw Thoughts (Transcript):
+{transcript}
 
-Self-Correction: Review each variation. If it is low quality, rewrite it immediately to ensure it passes a 0.75 safety score.
-
-Format: Return ONLY a valid JSON array of objects: [{"text": "..."}].
-
-Context: {context}
-Transcript: {transcript}"""
+Structure:
+[
+  {{"text": "variation 1 content"}},
+  {{"text": "variation 2 content"}},
+  ...
+]"""
 )
 
 async def generate_post_rag(transcript: str, retrieved_context: list, tone: str) -> list:
