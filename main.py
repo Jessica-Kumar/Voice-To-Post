@@ -153,36 +153,78 @@ async def confirm_post(request: ConfirmPostRequest):
 @app.post("/generate-post")
 async def generate_post(
     audio_file: UploadFile = File(...),
-    tone: str = Form(...) # Added Tone Parameter
+    tone: str = Form(...)
 ):
-    """Transcribes audio, applies tone, checks safety, and returns variations"""
+    """
+    Transcribes audio, generates 5 variations, scores each individually,
+    and returns only approved variations (>= 0.75).
+    """
+
+    # 1️⃣ Transcribe Audio
     audio_bytes = await audio_file.read()
-    transcript = await speech_service.transcribe_audio_bytes(audio_bytes, audio_file.content_type)
-    
+    transcript = await speech_service.transcribe_audio_bytes(
+        audio_bytes,
+        audio_file.content_type
+    )
+
     if transcript.startswith("Error") or transcript.startswith("ERROR"):
         raise HTTPException(status_code=500, detail=transcript)
-        
+
+    # 2️⃣ Retrieve Context from Vector Store
     results = vector_store.search_index(transcript, top_k=3)
-    avg_distance = sum([res["distance"] for res in results]) / len(results) if results else -1.0
-    
-    # Pass the 'tone' to your Gemini generation service to get the 5 variations
-    # (Ensure generation_service is updated to return a list of 5 dictionaries)
-    generated_variations = await generation_service.generate_post_rag(transcript, results, tone=tone)
-    
-    # Simplified Gatekeeper Check
-    score_data = scoring.calculate_safety_score(generated_variations[0]['text'], avg_distance)
-    c_score = score_data["final_score"]
-    
-    if c_score >= 0.75:
-        # DO NOT PUBLISH HERE. Just return the variations for the UI Carousel!
-        return {
-            "status": "success",
-            "variations": generated_variations, 
-            "error": None
-        }
-    else:
+
+    avg_distance = (
+        sum([res["distance"] for res in results]) / len(results)
+        if results else -1.0
+    )
+
+    # 3️⃣ Generate 5 Variations using RAG
+    generated_variations = await generation_service.generate_post_rag(
+        transcript,
+        results,
+        tone=tone
+    )
+
+    # 4️⃣ Score Each Variation Individually
+    approved_variations = []
+    scored_variations = []
+
+    for post in generated_variations:
+
+        # Skip invalid structure
+        if "text" not in post:
+            continue
+
+        score_data = scoring.calculate_safety_score(
+            post["text"],
+            avg_distance
+        )
+
+        final_score = score_data["final_score"]
+
+        scored_variations.append({
+            "text": post["text"],
+            "score": final_score,
+            "breakdown": score_data["breakdown"]
+        })
+
+        if final_score >= 0.75:
+            approved_variations.append({
+                "text": post["text"],
+                "score": final_score
+            })
+
+    # 5️⃣ If none passed
+    if len(approved_variations) == 0:
         return {
             "status": "rejected",
-            "variations": None,
-            "error": "The generated post failed safety thresholds (Score < 0.75)."
+            "variations": scored_variations,
+            "error": "All generated posts failed safety thresholds."
         }
+
+    # 6️⃣ Return approved ones only
+    return {
+        "status": "success",
+        "variations": approved_variations,
+        "error": None
+    }
