@@ -19,27 +19,26 @@ llm = ChatGoogleGenerativeAI(
 
 # UPGRADED PROMPT: Now requests 5 variations in a specific JSON format
 POST_GENERATION_PROMPT = PromptTemplate.from_template(
-    """You are an expert social media manager and safety auditor. 
+    """You are a Social Media Manager and a Quality Assurance Auditor. 
 
-**Goal**: Generate exactly 5 distinct social media post variations.
+**Goal**: Generate exactly 5 social media post variations that MUST pass a 0.75 safety score.
 
-**Target Tone**: {tone}
-**Context**: {context}
-**Raw Thoughts**: {transcript}
+**Scoring Logic Rules (Internalized from scoring.py)**:
+1. **Safety (30%)**: Do not use words like "spam", "hate", "violence", or "scam".
+2. **Engagement (10%)**: Every single post MUST include at least 2 hashtags and 2 emojis (e.g., 🚀, 🔥, 💡).
+3. **Relevance (30%)**: Content must stay 100% relevant to the transcript and context provided.
 
-**Security & Scoring Requirements (CRITICAL)**:
-1. **Safety**: Avoid forbidden terms like "spam", "hate", "violence", or "scam" to maintain a 1.0 safety score.
-2. **Engagement**: Include at least one hashtag (#) and one emoji (like 🚀, 💡, or 🔥) in every post to maximize the engagement score.
-3. **Relevance**: Ensure content is strictly related to the provided context and transcript.
-4. **Self-Audit**: Before returning JSON, verify that each post would pass a 0.75 safety threshold.
+Target Tone: {tone}
+Context: {context}
+Transcript: {transcript}
 
-Return ONLY a valid JSON array of objects:
+**Return ONLY a valid JSON array of objects**:
 [
-  {{"text": "variation 1 content"}},
-  {{"text": "variation 2 content"}},
-  {{"text": "variation 3 content"}},
-  {{"text": "variation 4 content"}},
-  {{"text": "variation 5 content"}}
+  {{"text": "Post 1 content with #hashtags and emojis 🚀🔥"}},
+  {{"text": "Post 2 content with #hashtags and emojis 💡✨"}},
+  {{"text": "Post 3 content with #hashtags and emojis 📈🙌"}},
+  {{"text": "Post 4 content with #hashtags and emojis 🎯🌟"}},
+  {{"text": "Post 5 content with #hashtags and emojis 💎✅"}}
 ]"""
 )
 
