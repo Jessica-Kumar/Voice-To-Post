@@ -9,83 +9,121 @@ from newsapi import NewsApiClient
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 
-# Initialize Gemini with a higher temperature for variety in the 5 variations
+# Initialize Gemini
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash", 
+    model="gemini-2.5-flash",
     google_api_key=GEMINI_API_KEY,
     temperature=0.8,
-    convert_system_message_to_human=True # Helps with older API compatibility
+    convert_system_message_to_human=True
 )
 
-# UPGRADED PROMPT: Now requests 5 variations in a specific JSON format
+# 🔥 CLEANED & STRUCTURED PROMPT
 POST_GENERATION_PROMPT = PromptTemplate.from_template(
-    """You are a Social Media Manager and a Quality Assurance Auditor. 
+"""
+You are a professional Social Media Content Strategist.
 
-**Goal**: Generate exactly 5 social media post variations that MUST pass a 0.75 safety score.
+TASK:
+Generate EXACTLY 5 distinct social media post variations.
 
-**Scoring Logic Rules (Internalized from scoring.py)**:
-1. **Safety (30%)**: Do not use words like "spam", "hate", "violence", or "scam".
-2. **Engagement (10%)**: Every single post MUST include at least 2 hashtags and 2 emojis (e.g., 🚀, 🔥, 💡).
-3. **Relevance (30%)**: Content must stay 100% relevant to the transcript and context provided.
+STRICT REQUIREMENTS:
+- Each post MUST contain at least 2 relevant hashtags.
+- Each post MUST contain at least 2 relevant emojis.
+- Do NOT use forbidden words: spam, hate, violence, scam.
+- Keep content deeply relevant to transcript and context.
+- Vary structure between posts (question, insight, CTA, bold statement, etc.)
+- No repeated sentences between variations.
 
 Target Tone: {tone}
-Context: {context}
-Transcript: {transcript}
 
-**Return ONLY a valid JSON array of objects**:
+Context:
+{context}
+
+Transcript:
+{transcript}
+
+IMPORTANT:
+Return ONLY valid JSON.
+No markdown.
+No explanations.
+No extra text.
+
+FORMAT:
 [
-  {{"text": "Post 1 content with #hashtags and emojis 🚀🔥"}},
-  {{"text": "Post 2 content with #hashtags and emojis 💡✨"}},
-  {{"text": "Post 3 content with #hashtags and emojis 📈🙌"}},
-  {{"text": "Post 4 content with #hashtags and emojis 🎯🌟"}},
-  {{"text": "Post 5 content with #hashtags and emojis 💎✅"}}
-]"""
+  {"text": "Post 1 here"},
+  {"text": "Post 2 here"},
+  {"text": "Post 3 here"},
+  {"text": "Post 4 here"},
+  {"text": "Post 5 here"}
+]
+"""
 )
+
 
 async def generate_post_rag(transcript: str, retrieved_context: list, tone: str) -> list:
     """
-    Upgraded function to support specific Tones and 5-Post variations for the UI carousel.
+    Generates 5 structured post variations using RAG + optional live news.
     """
+
     formatted_context = format_context(retrieved_context)
-    
-    # NewsAPI RAG Enhancement
+
+    # 🔹 NewsAPI Enhancement
     news_context = ""
     if NEWS_API_KEY:
         try:
             newsapi = NewsApiClient(api_key=NEWS_API_KEY)
-            query = transcript[:50] 
-            top_headlines = newsapi.get_everything(q=query, language='en', sort_by='relevancy', page_size=3)
-            if top_headlines['status'] == 'ok' and top_headlines['totalResults'] > 0:
-                news_context = "\n\nRelevant Live News:\n" + "\n".join([f"- {a['title']}" for a in top_headlines['articles']])
+            query = transcript[:50]
+            headlines = newsapi.get_everything(
+                q=query,
+                language='en',
+                sort_by='relevancy',
+                page_size=3
+            )
+
+            if headlines['status'] == 'ok' and headlines['totalResults'] > 0:
+                news_context = "\n\nRelevant Live News:\n"
+                news_context += "\n".join(
+                    [f"- {a['title']}" for a in headlines['articles']]
+                )
         except Exception as e:
             print(f"NewsAPI Error: {e}")
 
     final_context = formatted_context + news_context
-    
-    # Updated Chain to include the Tone parameter
+
     rag_chain = POST_GENERATION_PROMPT | llm | StrOutputParser()
-    
+
     try:
-        # Invoke the chain
         raw_result = await rag_chain.ainvoke({
             "context": final_context,
             "transcript": transcript,
             "tone": tone
         })
-        
-        # Parse the string into a list for the Android carousel
+
+        # Clean markdown fences if model accidentally adds them
         clean_json = raw_result.replace("```json", "").replace("```", "").strip()
-        return json.loads(clean_json)
-        
+
+        parsed = json.loads(clean_json)
+
+        # Validate structure
+        if isinstance(parsed, list) and len(parsed) == 5:
+            return parsed
+        else:
+            raise ValueError("Invalid JSON structure")
+
     except Exception as e:
-        print(f"RAG Error: {e}")
-        return [{"text": f"Error generating posts: {str(e)}"}]
+        print(f"RAG Parsing Error: {e}")
+
+        # 🔥 Safe fallback
+        fallback = [
+            {"text": f"AI generation fallback. Please try again. 🚀 #VoiceToPost #AI"}
+            for _ in range(5)
+        ]
+
+        return fallback
 
 
 def format_context(vector_results: list) -> str:
-    """Helper formatting function for the search results"""
     if not vector_results:
         return "No specific past context found."
-        
+
     context_lines = [f"- {res['text']}" for res in vector_results]
     return "\n".join(context_lines)
