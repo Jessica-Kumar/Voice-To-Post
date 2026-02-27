@@ -19,41 +19,38 @@ llm = ChatGoogleGenerativeAI(
 
 # 🔥 CLEANED & STRUCTURED PROMPT
 POST_GENERATION_PROMPT = PromptTemplate.from_template(
-"""
-You are a professional Social Media Content Strategist.
+"""You are a professional Social Media Content Strategist.
 TASK: Generate EXACTLY 5 distinct social media post variations.
 
-STRICT REQUIREMENTS:
-- Each post MUST contain at least 2 relevant hashtags.
-- Each post MUST contain at least 2 relevant emojis.
-- Do NOT use forbidden words: spam, hate, violence, scam.
-- Keep content deeply relevant to transcript and context.
-- Vary structure between posts (question, insight, CTA, bold statement, etc.)
-- No repeated sentences between variations.
-
+Target Platform: {platform}
 Target Tone: {tone}
 Context: {context}
 Transcript: {transcript}
 
-IMPORTANT:
-Return ONLY valid JSON.
-No markdown (do not wrap in ```json).
-No explanations.
-No extra text.
+PLATFORM RULES:
+- Twitter/X: Strictly under 280 characters. Short, punchy.
+- LinkedIn: Detailed, professional, line breaks, networking focus.
+- Instagram: Visual descriptions, catchy hooks, hashtags at bottom.
 
-FORMAT:
+STRICT REQUIREMENTS:
+- At least 2 hashtags.
+- At least 2 emojis (!, ?, 🚀, 💡, 🔥, 🌍).
+- No forbidden words: spam, hate, violence, scam.
+- Highly relevant to transcript.
+
+IMPORTANT: Return ONLY valid JSON array. No markdown. No extra text.
 [
-  {{"text": "<Write the actual generated post 1 content here>"}},
-  {{"text": "<Write the actual generated post 2 content here>"}},
-  {{"text": "<Write the actual generated post 3 content here>"}},
-  {{"text": "<Write the actual generated post 4 content here>"}},
-  {{"text": "<Write the actual generated post 5 content here>"}}
+  {{"text": "<Write actual engaging post 1 here>"}},
+  {{"text": "<Write actual engaging post 2 here>"}},
+  {{"text": "<Write actual engaging post 3 here>"}},
+  {{"text": "<Write actual engaging post 4 here>"}},
+  {{"text": "<Write actual engaging post 5 here>"}}
 ]
 """
 )
 
 
-async def generate_post_rag(transcript: str, retrieved_context: list, tone: str) -> list:
+async def generate_post_rag(transcript: str, retrieved_context: list, tone: str, platform: str) -> list:
     """
     Generates 5 structured post variations using RAG + optional live news.
     """
@@ -89,7 +86,8 @@ async def generate_post_rag(transcript: str, retrieved_context: list, tone: str)
         raw_result = await rag_chain.ainvoke({
             "context": final_context,
             "transcript": transcript,
-            "tone": tone
+            "tone": tone,
+            "platform": platform
         })
 
         # Clean markdown fences if model accidentally adds them
