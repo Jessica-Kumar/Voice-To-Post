@@ -21,9 +21,7 @@ llm = ChatGoogleGenerativeAI(
 POST_GENERATION_PROMPT = PromptTemplate.from_template(
 """
 You are a professional Social Media Content Strategist.
-
-TASK:
-Generate EXACTLY 5 distinct social media post variations.
+TASK: Generate EXACTLY 5 distinct social media post variations.
 
 STRICT REQUIREMENTS:
 - Each post MUST contain at least 2 relevant hashtags.
@@ -34,26 +32,22 @@ STRICT REQUIREMENTS:
 - No repeated sentences between variations.
 
 Target Tone: {tone}
-
-Context:
-{context}
-
-Transcript:
-{transcript}
+Context: {context}
+Transcript: {transcript}
 
 IMPORTANT:
 Return ONLY valid JSON.
-No markdown.
+No markdown (do not wrap in ```json).
 No explanations.
 No extra text.
 
 FORMAT:
 [
-  {"text": "Post 1 here"},
-  {"text": "Post 2 here"},
-  {"text": "Post 3 here"},
-  {"text": "Post 4 here"},
-  {"text": "Post 5 here"}
+  {{"text": "<Write the actual generated post 1 content here>"}},
+  {{"text": "<Write the actual generated post 2 content here>"}},
+  {{"text": "<Write the actual generated post 3 content here>"}},
+  {{"text": "<Write the actual generated post 4 content here>"}},
+  {{"text": "<Write the actual generated post 5 content here>"}}
 ]
 """
 )
