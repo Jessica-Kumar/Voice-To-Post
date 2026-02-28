@@ -1,37 +1,36 @@
 import os
-from dotenv import load_dotenv
-
-load_dotenv()
-
-from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Form
+import secrets
+import httpx
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from apscheduler.schedulers.background import BackgroundScheduler
+import tweepy
+from dotenv import load_dotenv
+
 import vector_store
 import speech_service
 import generation_service
 import scoring
-import scoring
 from database import get_db, SocialCreds, encrypt_secret, download_db, upload_db
 import social_publisher
-import dateparser
-from datetime import datetime
-from typing import Optional
-from apscheduler.schedulers.background import BackgroundScheduler
 
-# Initialize a FastAPI application
-app = FastAPI(
-    title="Voice-To-Post Backend API",
-    description="Foundational backend for Voice-To-Post AI-driven social media generator"
-)
+load_dotenv()
 
-# Initialize the Background Scheduler
+app = FastAPI(title="Voice-To-Post Backend API")
 scheduler = BackgroundScheduler()
 
-def publish_to_social_media(platform: str, text: str):
-    print(f"[Scheduled Job] Publishing to {platform}: {text}")
+# OAuth App credentials from environment
+LINKEDIN_CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID")
+LINKEDIN_CLIENT_SECRET = os.getenv("LINKEDIN_CLIENT_SECRET")
+TWITTER_CLIENT_ID = os.getenv("TWITTER_CLIENT_ID")
+TWITTER_CLIENT_SECRET = os.getenv("TWITTER_CLIENT_SECRET")
+BASE_URL = os.getenv("BASE_URL", "http://localhost:7860")  # for redirect URIs
 
-# Configure CORS middleware to allow all origins
+# In-memory store for PKCE verifier (use session/cache in production)
+twitter_oauth_state = {}
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -40,21 +39,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class GeneratePostRequest(BaseModel):
-    dummy_text: str
-
 @app.on_event("startup")
 async def startup_event():
-    """
-    Optional: Pre-load some sample data into the index on startup
-    so that searches aren't completely empty before adding new data.
-    """
-    # Attempt to download the latest credentials.db from Hugging Face Space Cloud Storage
     download_db()
-    
-    # Start the Background Scheduler
     scheduler.start()
-    
     sample_data = [
         "Welcome to Voice-To-Post backend!",
         "Vector databases help in doing semantic similarity search.",
@@ -65,166 +53,213 @@ async def startup_event():
 
 @app.get("/")
 async def health_endpoint():
-    """
-    Health Endpoint confirming the backend is running.
-    """
     return {"status": "Voice-To-Post Backend is running"}
 
-class SaveKeysRequest(BaseModel):
-    platform: str
-    client_id: str
-    client_secret: str
-
-@app.post("/settings/save-keys")
-async def save_keys(request: SaveKeysRequest, db: Session = Depends(get_db)):
-    """
-    Saves or updates OAuth2 client credentials for a specific social platform.
-    """
-    platform_key = request.platform.lower()
-    
-    # Check if creds for this platform already exist
-    existing_creds = db.query(SocialCreds).filter(SocialCreds.platform == platform_key).first()
-    
-    if existing_creds:
-        existing_creds.client_id = request.client_id
-        existing_creds.encrypted_secret = encrypt_secret(request.client_secret)
-        db.commit()
-        # Upload sync to permanent HF Dataset
-        upload_db()
-        return {"status": "success", "message": f"Updated credentials for {platform_key}."}
-    else:
-        new_creds = SocialCreds(
-            platform=platform_key,
-            client_id=request.client_id,
-            encrypted_secret=encrypt_secret(request.client_secret)
-        )
-        db.add(new_creds)
-        db.commit()
-        # Upload sync to permanent HF Dataset
-        upload_db()
-        return {"status": "success", "message": f"Saved new credentials for {platform_key}."}
-
-class ParseScheduleRequest(BaseModel):
-    transcript: str
-
-@app.post("/parse-schedule")
-async def parse_schedule(audio_file: UploadFile = File(...)):
-    """Transcribes schedule audio and returns ISO 8601 time"""
-    # 1. Transcribe the audio
-    audio_bytes = await audio_file.read()
-    transcript = await speech_service.transcribe_audio_bytes(audio_bytes, audio_file.content_type)
-    
-    # 2. Parse the human text into datetime
-    parsed_time = dateparser.parse(
-        transcript, 
-        settings={'TIMEZONE': 'Asia/Kolkata', 'RETURN_AS_TIMEZONE_AWARE': True}
+# -------------------- LinkedIn OAuth 2.0 --------------------
+@app.get("/auth/linkedin/login")
+async def linkedin_login():
+    scope = "w_member_social,profile,openid"
+    auth_url = (
+        f"https://www.linkedin.com/oauth/v2/authorization"
+        f"?response_type=code"
+        f"&client_id={LINKEDIN_CLIENT_ID}"
+        f"&redirect_uri={BASE_URL}/auth/linkedin/callback"
+        f"&scope={scope}"
     )
-    if not parsed_time:
-        raise HTTPException(status_code=400, detail="Could not parse scheduled time from transcript.")
-    
-    return {
-        "parsed_time": parsed_time.isoformat(),
-        "human_text": transcript
+    return RedirectResponse(auth_url)
+
+@app.get("/auth/linkedin/callback")
+async def linkedin_callback(code: str, db: Session = Depends(get_db)):
+    token_url = "https://www.linkedin.com/oauth/v2/accessToken"
+    data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": f"{BASE_URL}/auth/linkedin/callback",
+        "client_id": LINKEDIN_CLIENT_ID,
+        "client_secret": LINKEDIN_CLIENT_SECRET,
     }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(token_url, data=data)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=400, detail=f"LinkedIn token exchange failed: {resp.text}")
+        token_data = resp.json()
+        access_token = token_data["access_token"]
 
-class ConfirmPostRequest(BaseModel):
-    platform: str
-    text: str
-    scheduled_time: Optional[str] = None
+    # Store for demo_user
+    user_id = "demo_user"
+    creds = db.query(SocialCreds).filter(SocialCreds.user_id == user_id).first()
+    if not creds:
+        creds = SocialCreds(user_id=user_id)
+        db.add(creds)
+    creds.linkedin_access_token = encrypt_secret(access_token)
+    db.commit()
+    upload_db()
 
-@app.post("/confirm-post")
-async def confirm_post(request: ConfirmPostRequest):
-    if request.scheduled_time:
-        try:
-            dt = datetime.fromisoformat(request.scheduled_time)
-            scheduler.add_job(
-                publish_to_social_media, 
-                'date', 
-                run_date=dt, 
-                args=[request.platform, request.text]
-            )
-            return {"status": "scheduled", "message": f"Post scheduled for {dt.isoformat()}"}
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid scheduled_time format. Must be ISO 8601.")
-    else:
-        publish_to_social_media(request.platform, request.text)
-        return {"status": "published_immediately", "message": "Post published immediately."}
+    return HTMLResponse("<h1>LinkedIn authentication successful! You can close this window.</h1>")
 
+# -------------------- Twitter OAuth 2.0 with PKCE --------------------
+@app.get("/auth/twitter/login")
+async def twitter_login():
+    # Generate code verifier and challenge
+    oauth2_handler = tweepy.OAuth2UserHandler(
+        client_id=TWITTER_CLIENT_ID,
+        client_secret=TWITTER_CLIENT_SECRET,
+        redirect_uri=f"{BASE_URL}/auth/twitter/callback",
+        scope=["tweet.read", "tweet.write", "users.read", "offline.access"]
+    )
+    # Generate PKCE code verifier (tweepy can handle it)
+    authorization_url, state = oauth2_handler.get_authorization_url()
+    # Store state and verifier (in production use session)
+    twitter_oauth_state["demo_user"] = {
+        "state": state,
+        "code_verifier": oauth2_handler.code_verifier
+    }
+    return RedirectResponse(authorization_url)
+
+@app.get("/auth/twitter/callback")
+async def twitter_callback(code: str, state: str, db: Session = Depends(get_db)):
+    # Retrieve stored state and verifier
+    stored = twitter_oauth_state.get("demo_user")
+    if not stored or stored["state"] != state:
+        raise HTTPException(status_code=400, detail="Invalid state parameter")
+
+    oauth2_handler = tweepy.OAuth2UserHandler(
+        client_id=TWITTER_CLIENT_ID,
+        client_secret=TWITTER_CLIENT_SECRET,
+        redirect_uri=f"{BASE_URL}/auth/twitter/callback",
+        scope=["tweet.read", "tweet.write", "users.read", "offline.access"]
+    )
+    oauth2_handler.code_verifier = stored["code_verifier"]
+    # Exchange code for token
+    try:
+        token_data = oauth2_handler.fetch_token(code)
+        access_token = token_data["access_token"]
+        refresh_token = token_data.get("refresh_token")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Twitter token exchange failed: {str(e)}")
+
+    # Store for demo_user
+    user_id = "demo_user"
+    creds = db.query(SocialCreds).filter(SocialCreds.user_id == user_id).first()
+    if not creds:
+        creds = SocialCreds(user_id=user_id)
+        db.add(creds)
+    creds.twitter_access_token = encrypt_secret(access_token)
+    if refresh_token:
+        creds.twitter_refresh_token = encrypt_secret(refresh_token)
+    db.commit()
+    upload_db()
+
+    # Clean up stored verifier
+    twitter_oauth_state.pop("demo_user", None)
+
+    return HTMLResponse("<h1>Twitter authentication successful! You can close this window.</h1>")
+
+# -------------------- Generate Post (unchanged) --------------------
 @app.post("/generate-post")
 async def generate_post(
     audio_file: UploadFile = File(...),
-    tone: str = Form(...)
+    tone: str = Form(...),
+    platform: str = Form(...)
 ):
-    """
-    Transcribes audio, generates 5 variations, scores each individually,
-    and returns only approved variations (>= 0.75).
-    """
-
-    # 1️⃣ Transcribe Audio
     audio_bytes = await audio_file.read()
-    transcript = await speech_service.transcribe_audio_bytes(
-        audio_bytes,
-        audio_file.content_type
-    )
-
+    transcript = await speech_service.transcribe_audio_bytes(audio_bytes, audio_file.content_type)
     if transcript.startswith("Error") or transcript.startswith("ERROR"):
         raise HTTPException(status_code=500, detail=transcript)
 
-    # 2️⃣ Retrieve Context from Vector Store
     results = vector_store.search_index(transcript, top_k=3)
-
     avg_distance = (
         sum([res["distance"] for res in results]) / len(results)
         if results else -1.0
     )
 
-    # 3️⃣ Generate 5 Variations using RAG
     generated_variations = await generation_service.generate_post_rag(
         transcript,
         results,
-        tone=tone
+        tone=tone,
+        platform=platform
     )
 
-    # 4️⃣ Score Each Variation Individually
     approved_variations = []
     scored_variations = []
 
     for post in generated_variations:
-
-        # Skip invalid structure
         if "text" not in post:
             continue
-
-        score_data = scoring.calculate_safety_score(
-            post["text"],
-            avg_distance
-        )
-
+        score_data = scoring.calculate_safety_score(post["text"], avg_distance)
         final_score = score_data["final_score"]
-
         scored_variations.append({
             "text": post["text"],
             "score": final_score,
             "breakdown": score_data["breakdown"]
         })
-
         if final_score >= 0.75:
             approved_variations.append({
                 "text": post["text"],
                 "score": final_score
             })
 
-    # 5️⃣ If none passed
     if len(approved_variations) == 0:
         return {
             "status": "rejected",
             "variations": scored_variations,
             "error": "All generated posts failed safety thresholds."
         }
-
-    # 6️⃣ Return approved ones only
     return {
         "status": "success",
         "variations": approved_variations,
         "error": None
     }
+
+# -------------------- Publish Post --------------------
+@app.post("/publish-post")
+async def publish_post(
+    platform: str = Form(...),
+    post_text: str = Form(...),
+    user_id: str = Form("demo_user"),  # For future multi-user support
+    db: Session = Depends(get_db)
+):
+    platform_key = platform.lower()
+    creds = db.query(SocialCreds).filter(SocialCreds.user_id == user_id).first()
+    if not creds:
+        raise HTTPException(status_code=404, detail=f"No credentials found for user {user_id}. Please authenticate first.")
+
+    result = await social_publisher.publish_to_platform(platform_key, post_text, creds)
+    return result
+
+# -------------------- Scheduling endpoints (unchanged) --------------------
+from pydantic import BaseModel
+from datetime import datetime
+from typing import Optional
+import dateparser
+
+class ConfirmPostRequest(BaseModel):
+    platform: str
+    text: str
+    scheduled_time: Optional[str] = None
+
+@app.post("/parse-schedule")
+async def parse_schedule(audio_file: UploadFile = File(...)):
+    audio_bytes = await audio_file.read()
+    transcript = await speech_service.transcribe_audio_bytes(audio_bytes, audio_file.content_type)
+    parsed_time = dateparser.parse(
+        transcript,
+        settings={'TIMEZONE': 'Asia/Kolkata', 'RETURN_AS_TIMEZONE_AWARE': True}
+    )
+    if not parsed_time:
+        raise HTTPException(status_code=400, detail="Could not parse scheduled time.")
+    return {"parsed_time": parsed_time.isoformat(), "human_text": transcript}
+
+@app.post("/confirm-post")
+async def confirm_post(request: ConfirmPostRequest):
+    if request.scheduled_time:
+        try:
+            dt = datetime.fromisoformat(request.scheduled_time)
+            scheduler.add_job(publish_to_social_media, 'date', run_date=dt, args=[request.platform, request.text])
+            return {"status": "scheduled", "message": f"Post scheduled for {dt.isoformat()}"}
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid scheduled_time format.")
+    else:
+        # Immediate publishing (mock for now; actual would call social_publisher)
+        publish_to_social_media(request.platform, request.text)
+        return {"status": "published_immediately", "message": "Post published immediately."}
