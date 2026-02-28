@@ -1,14 +1,13 @@
 import os
-import secrets
 import httpx
-from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
 from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from apscheduler.schedulers.background import BackgroundScheduler
 import tweepy
 from dotenv import load_dotenv
-from typing import Optional, List, Dict, Any
+from typing import Optional
 from datetime import datetime
 from pydantic import BaseModel
 import dateparser
@@ -103,8 +102,6 @@ async def sync_linkedin_data(user_id: str, access_token: str, db: Session):
         data = resp.json()
         # Extract name (or headline if available). userinfo provides name, given_name, family_name.
         name = data.get("name", "")
-        # Optionally, also fetch headline from /me endpoint if more scopes allow.
-        # For now, we'll store the name as the bio.
         bio = name
         if not bio:
             # Fallback to email or sub
@@ -154,7 +151,7 @@ async def linkedin_callback(code: str, db: Session = Depends(get_db)):
         token_data = resp.json()
         access_token = token_data["access_token"]
 
-    user_id = "demo_user"  # In multi-user, use a real user identifier
+    user_id = token_data.get("sub", "unknown")  # Use sub as unique user ID
     creds = db.query(SocialCreds).filter(SocialCreds.user_id == user_id).first()
     if not creds:
         creds = SocialCreds(user_id=user_id)
@@ -177,16 +174,15 @@ async def twitter_login():
         scope=["tweet.read", "tweet.write", "users.read", "offline.access"]
     )
     authorization_url, state = oauth2_handler.get_authorization_url()
-    twitter_oauth_state["demo_user"] = {
-        "state": state,
+    twitter_oauth_state[state] = {
         "code_verifier": oauth2_handler.code_verifier
     }
     return RedirectResponse(authorization_url)
 
 @app.get("/auth/twitter/callback")
 async def twitter_callback(code: str, state: str, db: Session = Depends(get_db)):
-    stored = twitter_oauth_state.get("demo_user")
-    if not stored or stored["state"] != state:
+    stored = twitter_oauth_state.pop(state, None)
+    if not stored:
         raise HTTPException(status_code=400, detail="Invalid state parameter")
 
     oauth2_handler = tweepy.OAuth2UserHandler(
@@ -203,10 +199,16 @@ async def twitter_callback(code: str, state: str, db: Session = Depends(get_db))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Twitter token exchange failed: {str(e)}")
 
-    user_id = "demo_user"
-    creds = db.query(SocialCreds).filter(SocialCreds.user_id == user_id).first()
+    # Get user ID from Twitter to use as primary key
+    client = tweepy.Client(bearer_token=access_token)
+    me = client.get_me()
+    if not me.data:
+        raise HTTPException(status_code=400, detail="Could not fetch Twitter user info")
+    user_id = me.data.id
+
+    creds = db.query(SocialCreds).filter(SocialCreds.user_id == str(user_id)).first()
     if not creds:
-        creds = SocialCreds(user_id=user_id)
+        creds = SocialCreds(user_id=str(user_id))
         db.add(creds)
     creds.twitter_access_token = encrypt_secret(access_token)
     if refresh_token:
@@ -214,10 +216,8 @@ async def twitter_callback(code: str, state: str, db: Session = Depends(get_db))
     db.commit()
     upload_db()
 
-    twitter_oauth_state.pop("demo_user", None)
-
     # Sync bio and store in vector store
-    await sync_twitter_data(user_id, access_token, db)
+    await sync_twitter_data(str(user_id), access_token, db)
 
     return HTMLResponse("<h1>Twitter authentication successful! You can close this window.</h1>")
 
@@ -227,7 +227,7 @@ async def generate_post(
     audio_file: UploadFile = File(...),
     tone: str = Form(...),
     platform: str = Form(...),
-    user_id: str = Form("demo_user")
+    user_id: str = Form(...)          # Must be provided by frontend after OAuth
 ):
     # 1. Transcribe
     audio_bytes = await audio_file.read()
@@ -246,8 +246,8 @@ async def generate_post(
     MAX_ATTEMPTS = 15
     THRESHOLD = 0.45
     attempts = 0
-    approved_posts = []          # list of dicts with "text" and "score"
-    all_scored = []               # for logging/debug
+    approved_posts = []
+    all_scored = []
 
     while len(approved_posts) < 5 and attempts < MAX_ATTEMPTS:
         attempts += 1
@@ -277,13 +277,12 @@ async def generate_post(
                 if len(approved_posts) >= 5:
                     break
 
-    # Sort approved posts by score descending (highest quality first)
     approved_posts.sort(key=lambda x: x["score"], reverse=True)
 
     status = "success" if len(approved_posts) >= 5 else "partial_success"
     return {
         "status": status,
-        "variations": approved_posts[:5],  # top 5 if more than 5
+        "variations": approved_posts[:5],
         "total_generated": len(all_scored),
         "attempts_used": attempts,
         "message": f"Generated {len(approved_posts)} posts meeting threshold." if len(approved_posts) < 5 else None
@@ -294,7 +293,7 @@ async def generate_post(
 async def publish_post(
     platform: str = Form(...),
     post_text: str = Form(...),
-    user_id: str = Form("demo_user"),
+    user_id: str = Form(...),
     db: Session = Depends(get_db)
 ):
     platform_key = platform.lower()
