@@ -31,9 +31,10 @@ TWITTER_CLIENT_ID = os.getenv("TWITTER_CLIENT_ID")
 TWITTER_CLIENT_SECRET = os.getenv("TWITTER_CLIENT_SECRET")
 BASE_URL = os.getenv("BASE_URL", "http://localhost:7860")
 
-# In-memory store for PKCE verifier (use session/cache in production)
+# In-memory store for PKCE verifier (use Redis in production)
 twitter_oauth_state = {}
 
+# ✅ Fixed typo: allow_methods
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -49,7 +50,7 @@ def publish_to_social_media(platform: str, text: str):
 async def startup_event():
     download_db()
     scheduler.start()
-    # Add global sample data (optional, can be tied to a system user)
+    # Add global sample data (optional, tied to system user)
     sample_data = [
         "Welcome to Voice-To-Post backend!",
         "Vector databases help in doing semantic similarity search.",
@@ -65,34 +66,24 @@ async def health_endpoint():
 # ==================== Bio Syncing Helpers ====================
 
 async def sync_twitter_data(user_id: str, access_token: str, db: Session):
-    """
-    Fetch Twitter user description and store it in the database and vector store.
-    """
     try:
         client = tweepy.Client(bearer_token=access_token)
         me = client.get_me(user_fields=["description"])
         if me.data:
             description = me.data.description
-            # Update database
             creds = db.query(SocialCreds).filter(SocialCreds.user_id == user_id).first()
             if not creds:
                 creds = SocialCreds(user_id=user_id)
                 db.add(creds)
             creds.twitter_bio = description
             db.commit()
-
-            # Add to user's private vector store
             if description:
                 vector_store.add_text_to_index([description], user_id=user_id)
-                print(f"Synced and stored Twitter bio for user {user_id}")
+                print(f"Synced Twitter bio for user {user_id}")
     except Exception as e:
         print(f"Error syncing Twitter data: {e}")
 
 async def sync_linkedin_data(user_id: str, access_token: str, db: Session):
-    """
-    Fetch LinkedIn profile info from /userinfo endpoint (OpenID Connect)
-    and store it in the database and vector store.
-    """
     headers = {"Authorization": f"Bearer {access_token}"}
     async with httpx.AsyncClient() as client:
         resp = await client.get("https://api.linkedin.com/v2/userinfo", headers=headers)
@@ -100,25 +91,17 @@ async def sync_linkedin_data(user_id: str, access_token: str, db: Session):
             print(f"LinkedIn userinfo error: {resp.status_code} - {resp.text}")
             return
         data = resp.json()
-        # Extract name (or headline if available). userinfo provides name, given_name, family_name.
         name = data.get("name", "")
-        bio = name
-        if not bio:
-            # Fallback to email or sub
-            bio = data.get("email", data.get("sub", ""))
-
-        # Update database
+        bio = name or data.get("email", data.get("sub", ""))
         creds = db.query(SocialCreds).filter(SocialCreds.user_id == user_id).first()
         if not creds:
             creds = SocialCreds(user_id=user_id)
             db.add(creds)
         creds.linkedin_headline = bio
         db.commit()
-
-        # Add to user's private vector store
         if bio:
             vector_store.add_text_to_index([bio], user_id=user_id)
-            print(f"Synced and stored LinkedIn bio for user {user_id}")
+            print(f"Synced LinkedIn bio for user {user_id}")
 
 # ==================== OAuth Endpoints ====================
 
@@ -151,7 +134,15 @@ async def linkedin_callback(code: str, db: Session = Depends(get_db)):
         token_data = resp.json()
         access_token = token_data["access_token"]
 
-    user_id = token_data.get("sub", "unknown")  # Use sub as unique user ID
+    # Get user ID from userinfo endpoint
+    headers = {"Authorization": f"Bearer {access_token}"}
+    async with httpx.AsyncClient() as client:
+        userinfo = await client.get("https://api.linkedin.com/v2/userinfo", headers=headers)
+        if userinfo.status_code != 200:
+            raise HTTPException(status_code=400, detail="Could not fetch user info")
+        userinfo_data = userinfo.json()
+        user_id = userinfo_data["sub"]
+
     creds = db.query(SocialCreds).filter(SocialCreds.user_id == user_id).first()
     if not creds:
         creds = SocialCreds(user_id=user_id)
@@ -160,10 +151,22 @@ async def linkedin_callback(code: str, db: Session = Depends(get_db)):
     db.commit()
     upload_db()
 
-    # Sync bio and store in vector store
     await sync_linkedin_data(user_id, access_token, db)
 
-    return HTMLResponse("<h1>LinkedIn authentication successful! You can close this window.</h1>")
+    # Return HTML with user_id (for webview to extract)
+    return HTMLResponse(f"""
+    <html>
+        <body>
+            <h1>LinkedIn authentication successful!</h1>
+            <p>Your user ID: <strong>{user_id}</strong></p>
+            <p>You can close this window and return to the app.</p>
+            <script>
+                // For Android: send the user_id back via custom scheme
+                window.location.href = "yourapp://callback?user_id={user_id}";
+            </script>
+        </body>
+    </html>
+    """)
 
 @app.get("/auth/twitter/login")
 async def twitter_login():
@@ -174,9 +177,7 @@ async def twitter_login():
         scope=["tweet.read", "tweet.write", "users.read", "offline.access"]
     )
     authorization_url, state = oauth2_handler.get_authorization_url()
-    twitter_oauth_state[state] = {
-        "code_verifier": oauth2_handler.code_verifier
-    }
+    twitter_oauth_state[state] = {"code_verifier": oauth2_handler.code_verifier}
     return RedirectResponse(authorization_url)
 
 @app.get("/auth/twitter/callback")
@@ -199,16 +200,16 @@ async def twitter_callback(code: str, state: str, db: Session = Depends(get_db))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Twitter token exchange failed: {str(e)}")
 
-    # Get user ID from Twitter to use as primary key
+    # Get user ID from Twitter API
     client = tweepy.Client(bearer_token=access_token)
     me = client.get_me()
     if not me.data:
         raise HTTPException(status_code=400, detail="Could not fetch Twitter user info")
-    user_id = me.data.id
+    user_id = str(me.data.id)
 
-    creds = db.query(SocialCreds).filter(SocialCreds.user_id == str(user_id)).first()
+    creds = db.query(SocialCreds).filter(SocialCreds.user_id == user_id).first()
     if not creds:
-        creds = SocialCreds(user_id=str(user_id))
+        creds = SocialCreds(user_id=user_id)
         db.add(creds)
     creds.twitter_access_token = encrypt_secret(access_token)
     if refresh_token:
@@ -216,18 +217,28 @@ async def twitter_callback(code: str, state: str, db: Session = Depends(get_db))
     db.commit()
     upload_db()
 
-    # Sync bio and store in vector store
-    await sync_twitter_data(str(user_id), access_token, db)
+    await sync_twitter_data(user_id, access_token, db)
 
-    return HTMLResponse("<h1>Twitter authentication successful! You can close this window.</h1>")
+    return HTMLResponse(f"""
+    <html>
+        <body>
+            <h1>Twitter authentication successful!</h1>
+            <p>Your user ID: <strong>{user_id}</strong></p>
+            <p>You can close this window and return to the app.</p>
+            <script>
+                window.location.href = "yourapp://callback?user_id={user_id}";
+            </script>
+        </body>
+    </html>
+    """)
 
-# ==================== Generation Endpoint with Guaranteed 5 Loop ====================
+# ==================== Generation Endpoint ====================
 @app.post("/generate-post")
 async def generate_post(
     audio_file: UploadFile = File(...),
     tone: str = Form(...),
     platform: str = Form(...),
-    user_id: str = Form(...)          # Must be provided by frontend after OAuth
+    user_id: str = Form(...)
 ):
     # 1. Transcribe
     audio_bytes = await audio_file.read()
