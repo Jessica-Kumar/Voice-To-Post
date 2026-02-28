@@ -19,17 +19,17 @@ Base = declarative_base()
 class SocialCreds(Base):
     __tablename__ = "social_creds"
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(String, unique=True, index=True, nullable=False, default="demo_user")
+    user_id = Column(String, unique=True, index=True, nullable=False)
 
-    # Twitter tokens
-    twitter_access_token = Column(String, nullable=True)   # encrypted
-    twitter_refresh_token = Column(String, nullable=True)  # encrypted
-    twitter_bio = Column(String, nullable=True)            # plain text (profile description)
+    # Twitter tokens + bio
+    twitter_access_token = Column(String, nullable=True)
+    twitter_refresh_token = Column(String, nullable=True)
+    twitter_bio = Column(String, nullable=True)
 
-    # LinkedIn tokens
-    linkedin_access_token = Column(String, nullable=True)  # encrypted
-    linkedin_vanity_name = Column(String, nullable=True)   # plain text
-    linkedin_headline = Column(String, nullable=True)      # plain text
+    # LinkedIn tokens + bio
+    linkedin_access_token = Column(String, nullable=True)
+    linkedin_vanity_name = Column(String, nullable=True)
+    linkedin_headline = Column(String, nullable=True)
 
 # Encryption setup
 ENV_KEY = os.getenv("ENCRYPTION_KEY")
@@ -50,7 +50,7 @@ def decrypt_secret(encrypted_text: str) -> str:
 # Create tables
 Base.metadata.create_all(bind=engine)
 
-# Hugging Face persistence (unchanged)
+# Hugging Face persistence
 HF_TOKEN = os.getenv("HF_TOKEN")
 HF_DATASET_REPO = "JessicaKumar/voice-to-post-data"
 
