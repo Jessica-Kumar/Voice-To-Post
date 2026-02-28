@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from langchain_core.prompts import PromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.output_parsers import StrOutputParser
@@ -8,7 +9,7 @@ from newsapi import NewsApiClient
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 
-# ✅ Stable LLM with low temperature and top_p – prevents hallucinations and ensures factual output
+# Stable LLM with low temperature and top_p – remains unchanged
 llm = ChatGoogleGenerativeAI(
     model="gemini-1.5-flash",
     google_api_key=GEMINI_API_KEY,
@@ -16,7 +17,7 @@ llm = ChatGoogleGenerativeAI(
     top_p=0.1
 )
 
-# 🔥 Single, highly‑instructive prompt (no separate system message)
+# Strict prompt (unchanged)
 STRICT_PROMPT = PromptTemplate.from_template(
     """You are a professional Social Media Strategist for a B.Tech CSE student at KIET Group of Institutions.
 Your task is to generate EXACTLY 5 distinct, high‑quality social media posts based on the following inputs.
@@ -60,10 +61,10 @@ async def generate_post_rag(
     platform: str,
     num_variations: int = 5
 ) -> list:
-    # Format the vector store results into a readable context block
+    # Format the vector store results
     formatted_context = _format_context(retrieved_context)
 
-    # Optional live news enrichment (if available)
+    # Optional live news enrichment
     news_context = ""
     if NEWS_API_KEY:
         try:
@@ -77,7 +78,7 @@ async def generate_post_rag(
 
     final_context = formatted_context + news_context
 
-    # Build the chain with the single strict prompt
+    # Build chain
     chain = STRICT_PROMPT | llm | StrOutputParser()
 
     try:
@@ -88,18 +89,25 @@ async def generate_post_rag(
             "platform": platform
         })
 
-        # Clean potential markdown code fences
-        clean_json = raw_result.replace("```json", "").replace("```", "").strip()
+        print(f"Raw LLM output: {raw_result[:500]}")  # Debug log
+
+        # 🔥 Regex extraction – find the first JSON array
+        match = re.search(r'\[.*\]', raw_result, re.DOTALL)
+        if not match:
+            raise ValueError("No JSON array found in response")
+
+        clean_json = match.group(0)
         parsed = json.loads(clean_json)
 
-        if isinstance(parsed, list) and len(parsed) == 5:
-            return parsed
+        # Flexible array handling – accept any list, take first 5
+        if isinstance(parsed, list):
+            return parsed[:5]   # Return up to 5 posts
         else:
-            raise ValueError("Invalid JSON structure")
+            raise ValueError("Parsed JSON is not a list")
 
     except Exception as e:
         print(f"RAG Parsing Error: {e}")
-        # Safe fallback – 5 simple posts
+        # Safe fallback
         fallback = [
             {"text": f"AI generation fallback. Please try again. 🚀 #VoiceToPost #AI"}
             for _ in range(5)
