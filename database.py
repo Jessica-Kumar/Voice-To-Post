@@ -19,14 +19,17 @@ Base = declarative_base()
 class SocialCreds(Base):
     __tablename__ = "social_creds"
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(String, unique=True, index=True, nullable=False, default="demo_user")  # e.g., email or sub
+    user_id = Column(String, unique=True, index=True, nullable=False, default="demo_user")
 
-    # Twitter tokens (OAuth 2.0)
+    # Twitter tokens
     twitter_access_token = Column(String, nullable=True)   # encrypted
     twitter_refresh_token = Column(String, nullable=True)  # encrypted
+    twitter_bio = Column(String, nullable=True)            # plain text (profile description)
 
-    # LinkedIn token (OAuth 2.0)
+    # LinkedIn tokens
     linkedin_access_token = Column(String, nullable=True)  # encrypted
+    linkedin_vanity_name = Column(String, nullable=True)   # plain text
+    linkedin_headline = Column(String, nullable=True)      # plain text
 
 # Encryption setup
 ENV_KEY = os.getenv("ENCRYPTION_KEY")
