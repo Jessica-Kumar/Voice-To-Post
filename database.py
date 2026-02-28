@@ -21,24 +21,24 @@ class SocialCreds(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(String, unique=True, index=True, nullable=False)
 
-    # Twitter tokens + bio
+    # Twitter
     twitter_access_token = Column(String, nullable=True)
     twitter_refresh_token = Column(String, nullable=True)
     twitter_bio = Column(String, nullable=True)
 
-    # LinkedIn tokens + bio
+    # LinkedIn
     linkedin_access_token = Column(String, nullable=True)
     linkedin_vanity_name = Column(String, nullable=True)
     linkedin_headline = Column(String, nullable=True)
 
-# Encryption setup
+# ✅ Critical: Require ENCRYPTION_KEY to be set
 ENV_KEY = os.getenv("ENCRYPTION_KEY")
-if ENV_KEY:
-    FERNET_KEY = ENV_KEY.encode('utf-8')
-else:
-    FERNET_KEY = Fernet.generate_key()
-    print("WARNING: ENCRYPTION_KEY not found. Using a temporary runtime key.")
-
+if not ENV_KEY:
+    raise ValueError(
+        "❌ CRITICAL: ENCRYPTION_KEY must be set in environment variables. "
+        "Generate one with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
+    )
+FERNET_KEY = ENV_KEY.encode('utf-8')
 cipher_suite = Fernet(FERNET_KEY)
 
 def encrypt_secret(plain_text: str) -> str:
@@ -47,7 +47,6 @@ def encrypt_secret(plain_text: str) -> str:
 def decrypt_secret(encrypted_text: str) -> str:
     return cipher_suite.decrypt(encrypted_text.encode('utf-8')).decode('utf-8')
 
-# Create tables
 Base.metadata.create_all(bind=engine)
 
 # Hugging Face persistence
