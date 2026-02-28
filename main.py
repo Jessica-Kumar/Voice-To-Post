@@ -16,7 +16,7 @@ import vector_store
 import speech_service
 import generation_service
 import scoring
-from database import get_db, SocialCreds, encrypt_secret, decrypt_secret, download_db, upload_db   # ✅ upload_db imported
+from database import get_db, SocialCreds, encrypt_secret, decrypt_secret, download_db, upload_db
 import social_publisher
 
 load_dotenv()
@@ -107,23 +107,31 @@ async def sync_linkedin_data(user_id: str, access_token: str, db: Session):
 
 @app.get("/auth/linkedin/login")
 async def linkedin_login():
+    # Sanitize BASE_URL to avoid double slashes
+    clean_base = BASE_URL.rstrip('/')
+    redirect_uri = f"{clean_base}/auth/linkedin/callback"
+    
     scope = "w_member_social,profile,openid"
     auth_url = (
         f"https://www.linkedin.com/oauth/v2/authorization"
         f"?response_type=code"
         f"&client_id={LINKEDIN_CLIENT_ID}"
-        f"&redirect_uri={BASE_URL}/auth/linkedin/callback"
+        f"&redirect_uri={redirect_uri}"
         f"&scope={scope}"
     )
     return RedirectResponse(auth_url)
 
 @app.get("/auth/linkedin/callback")
 async def linkedin_callback(code: str, db: Session = Depends(get_db)):
+    # Sanitize BASE_URL again to ensure consistency
+    clean_base = BASE_URL.rstrip('/')
+    redirect_uri = f"{clean_base}/auth/linkedin/callback"
+    
     token_url = "https://www.linkedin.com/oauth/v2/accessToken"
     data = {
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": f"{BASE_URL}/auth/linkedin/callback",
+        "redirect_uri": redirect_uri,
         "client_id": LINKEDIN_CLIENT_ID,
         "client_secret": LINKEDIN_CLIENT_SECRET,
     }
@@ -148,7 +156,7 @@ async def linkedin_callback(code: str, db: Session = Depends(get_db)):
         creds = SocialCreds(user_id=user_id)
         db.add(creds)
     creds.linkedin_access_token = encrypt_secret(access_token)
-    db.commit()   # ✅ local save
+    db.commit()   # local save
 
     # 🔥 CRITICAL: Backup to Hugging Face dataset immediately
     upload_db()
@@ -215,7 +223,7 @@ async def twitter_callback(code: str, state: str, db: Session = Depends(get_db))
     creds.twitter_access_token = encrypt_secret(access_token)
     if refresh_token:
         creds.twitter_refresh_token = encrypt_secret(refresh_token)
-    db.commit()   # ✅ local save
+    db.commit()   # local save
 
     # 🔥 CRITICAL: Backup to Hugging Face dataset immediately
     upload_db()
