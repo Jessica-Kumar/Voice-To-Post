@@ -1,5 +1,6 @@
 import os
 import httpx
+import asyncio
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
 from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +17,7 @@ import vector_store
 import speech_service
 import generation_service
 import scoring
-from database import get_db, SocialCreds, encrypt_secret, decrypt_secret, download_db, upload_db
+from database import get_db, SessionLocal, SocialCreds, encrypt_secret, decrypt_secret, download_db, upload_db
 import social_publisher
 
 load_dotenv()
@@ -34,7 +35,6 @@ BASE_URL = os.getenv("BASE_URL", "http://localhost:7860")
 # In-memory store for PKCE verifier (use Redis in production)
 twitter_oauth_state = {}
 
-# ✅ Fixed typo: allow_methods
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,9 +42,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-def publish_to_social_media(platform: str, text: str):
-    print(f"[Scheduled Job] Publishing to {platform}: {text}")
 
 @app.on_event("startup")
 async def startup_event():
@@ -107,10 +104,8 @@ async def sync_linkedin_data(user_id: str, access_token: str, db: Session):
 
 @app.get("/auth/linkedin/login")
 async def linkedin_login():
-    # Sanitize BASE_URL to avoid double slashes
     clean_base = BASE_URL.rstrip('/')
     redirect_uri = f"{clean_base}/auth/linkedin/callback"
-    
     scope = "w_member_social,profile,openid"
     auth_url = (
         f"https://www.linkedin.com/oauth/v2/authorization"
@@ -123,10 +118,8 @@ async def linkedin_login():
 
 @app.get("/auth/linkedin/callback")
 async def linkedin_callback(code: str, db: Session = Depends(get_db)):
-    # Sanitize BASE_URL again to ensure consistency
     clean_base = BASE_URL.rstrip('/')
     redirect_uri = f"{clean_base}/auth/linkedin/callback"
-    
     token_url = "https://www.linkedin.com/oauth/v2/accessToken"
     data = {
         "grant_type": "authorization_code",
@@ -156,9 +149,7 @@ async def linkedin_callback(code: str, db: Session = Depends(get_db)):
         creds = SocialCreds(user_id=user_id)
         db.add(creds)
     creds.linkedin_access_token = encrypt_secret(access_token)
-    db.commit()   # local save
-
-    # 🔥 CRITICAL: Backup to Hugging Face dataset immediately
+    db.commit()
     upload_db()
 
     await sync_linkedin_data(user_id, access_token, db)
@@ -170,7 +161,6 @@ async def linkedin_callback(code: str, db: Session = Depends(get_db)):
             <p>Your user ID: <strong>{user_id}</strong></p>
             <p>You can close this window and return to the app.</p>
             <script>
-                // For Android: send the user_id back via custom scheme
                 window.location.href = "yourapp://callback?user_id={user_id}";
             </script>
         </body>
@@ -223,9 +213,7 @@ async def twitter_callback(code: str, state: str, db: Session = Depends(get_db))
     creds.twitter_access_token = encrypt_secret(access_token)
     if refresh_token:
         creds.twitter_refresh_token = encrypt_secret(refresh_token)
-    db.commit()   # local save
-
-    # 🔥 CRITICAL: Backup to Hugging Face dataset immediately
+    db.commit()
     upload_db()
 
     await sync_twitter_data(user_id, access_token, db)
@@ -327,13 +315,10 @@ async def publish_post(
     return result
 
 # ==================== Scheduling Endpoints ====================
-class ConfirmPostRequest(BaseModel):
-    platform: str
-    text: str
-    scheduled_time: Optional[str] = None
 
 @app.post("/parse-schedule")
 async def parse_schedule(audio_file: UploadFile = File(...)):
+    """Transcribes schedule audio and returns ISO 8601 time"""
     audio_bytes = await audio_file.read()
     transcript = await speech_service.transcribe_audio_bytes(audio_bytes, audio_file.content_type)
     parsed_time = dateparser.parse(
@@ -344,15 +329,53 @@ async def parse_schedule(audio_file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail="Could not parse scheduled time.")
     return {"parsed_time": parsed_time.isoformat(), "human_text": transcript}
 
+class ConfirmPostRequest(BaseModel):
+    platform: str
+    text: str
+    scheduled_time: Optional[str] = None
+    user_id: str   # Frontend must send this (obtained from OAuth callback)
+
+def scheduled_publish_job(platform: str, text: str, user_id: str):
+    """
+    Background job run by APScheduler (synchronous thread).
+    Opens its own DB session, retrieves user credentials, and publishes.
+    """
+    db = SessionLocal()
+    try:
+        creds = db.query(SocialCreds).filter(SocialCreds.user_id == user_id).first()
+        if not creds:
+            print(f"[Scheduled Job] No credentials for user {user_id}")
+            return
+        # Run the async publisher inside this sync function
+        asyncio.run(social_publisher.publish_to_platform(platform.lower(), text, creds))
+    except Exception as e:
+        print(f"[Scheduled Job] Error: {e}")
+    finally:
+        db.close()
+
 @app.post("/confirm-post")
-async def confirm_post(request: ConfirmPostRequest):
-    if request.scheduled_time:
-        try:
-            dt = datetime.fromisoformat(request.scheduled_time)
-            scheduler.add_job(publish_to_social_media, 'date', run_date=dt, args=[request.platform, request.text])
-            return {"status": "scheduled", "message": f"Post scheduled for {dt.isoformat()}"}
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid scheduled_time format.")
-    else:
-        publish_to_social_media(request.platform, request.text)
-        return {"status": "published_immediately", "message": "Post published immediately."}
+async def confirm_post(request: ConfirmPostRequest, db: Session = Depends(get_db)):
+    # Immediate posting – await directly (async)
+    if not request.scheduled_time:
+        creds = db.query(SocialCreds).filter(SocialCreds.user_id == request.user_id).first()
+        if not creds:
+            raise HTTPException(status_code=404, detail="User credentials not found")
+        result = await social_publisher.publish_to_platform(
+            request.platform.lower(),
+            request.text,
+            creds
+        )
+        return {"status": "published_immediately", "result": result}
+
+    # Scheduled posting
+    try:
+        dt = datetime.fromisoformat(request.scheduled_time)
+        scheduler.add_job(
+            scheduled_publish_job,
+            'date',
+            run_date=dt,
+            args=[request.platform, request.text, request.user_id]
+        )
+        return {"status": "scheduled", "message": f"Post scheduled for {dt.isoformat()}"}
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid scheduled_time format.")
