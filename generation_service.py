@@ -4,67 +4,54 @@ from langchain_core.prompts import PromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.output_parsers import StrOutputParser
 from newsapi import NewsApiClient
-from langchain_core.messages import SystemMessage
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 
-# ✅ Lower temperature (0.2) and top_p (0.1) for deterministic, grounded output
+# ✅ Stable LLM with low temperature and top_p – prevents hallucinations and ensures factual output
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model="gemini-1.5-flash",
     google_api_key=GEMINI_API_KEY,
     temperature=0.2,
-    top_p=0.1,
-    convert_system_message_to_human=True
+    top_p=0.1
 )
 
-# 🔥 Updated System Prompt (the "Anchor" Strategy)
-SYSTEM_PROMPT = """You are a specialized Social Media Engineer for a B.Tech CSE student.
-Technical Parameters:
-- Temperature: 0.2 (keep factual, avoid hallucinations)
-- Top_P: 0.1 (use only the most professional vocabulary)
-- Presence Penalty: 0.0 (stay on the given context)
+# 🔥 Single, highly‑instructive prompt (no separate system message)
+STRICT_PROMPT = PromptTemplate.from_template(
+    """You are a professional Social Media Strategist for a B.Tech CSE student at KIET Group of Institutions.
+Your task is to generate EXACTLY 5 distinct, high‑quality social media posts based on the following inputs.
 
-Instructions:
-1. Groundedness: Every claim must be 100% derived from the provided Vector Context (Exhibit A) or the Voice Transcript.
-2. Contextual Mirroring: Use the specific terminology from the user's background (e.g., 'KIET Group of Institutions', 'B.Tech CSE') to minimize semantic distance.
-3. Score Optimization: Do not use generic AI greetings. Start directly with the hook to keep the relevance score high."""
-
-# 🔥 User prompt template – now only LinkedIn and Twitter
-USER_PROMPT_TEMPLATE = PromptTemplate.from_template(
-    """TASK: Generate EXACTLY 5 distinct social media post variations.
 Target Platform: {platform}
 Target Tone: {tone}
-Context: {context}
-Transcript: {transcript}
+Context from user's profile and past content: {context}
+User's voice transcript (topic/idea): {transcript}
 
-PLATFORM RULES:
-- Twitter/X: Strictly under 280 characters. Short, punchy.
-- LinkedIn: Detailed, professional, line breaks, networking focus.
+CRITICAL GROUNDING RULES:
+- Every post MUST be derived **exclusively** from the provided Context or Transcript. Do not invent facts.
+- Use specific terminology from the user's background: 'KIET Group of Institutions', 'B.Tech CSE', etc.
+- Start each post directly with the hook – no generic AI greetings like "Here's a post".
+- Stay factual and professional; avoid fluff.
 
-STRICT REQUIREMENTS:
-- At least 2 hashtags.
-- At least 2 emojis (!, ?, 🚀, 💡, 🔥, 🌍).
+PLATFORM GUIDELINES:
+- **Twitter/X**: Strictly ≤ 280 characters, short, punchy.
+- **LinkedIn**: Detailed, professional, can include line breaks, networking focused.
+
+FORMATTING REQUIREMENTS (to pass the safety gate):
+- Include at least 2 relevant hashtags.
+- Include at least 2 emojis (!, ?, 🚀, 💡, 🔥, 🌍 are allowed).
 - No forbidden words: spam, hate, violence, scam.
-- Highly relevant to transcript.
-IMPORTANT: Return ONLY valid JSON array. No markdown. No extra text.
+
+OUTPUT FORMAT:
+Return ONLY a valid JSON array with exactly 5 objects, each having a key "text". Do NOT include markdown or any extra text.
 [
-  {{"text": "<Write actual engaging post 1 here>"}},
-  {{"text": "<Write actual engaging post 2 here>"}},
-  {{"text": "<Write actual engaging post 3 here>"}},
-  {{"text": "<Write actual engaging post 4 here>"}},
-  {{"text": "<Write actual engaging post 5 here>"}}
+  {{"text": "<First engaging post here>"}},
+  {{"text": "<Second engaging post here>"}},
+  {{"text": "<Third engaging post here>"}},
+  {{"text": "<Fourth engaging post here>"}},
+  {{"text": "<Fifth engaging post here>"}}
 ]
 """
 )
-
-# Combine system and user prompt
-def create_full_prompt():
-    from langchain_core.prompts import ChatPromptTemplate
-    return ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
-        ("human", USER_PROMPT_TEMPLATE)
-    ])
 
 async def generate_post_rag(
     transcript: str,
@@ -73,8 +60,10 @@ async def generate_post_rag(
     platform: str,
     num_variations: int = 5
 ) -> list:
+    # Format the vector store results into a readable context block
     formatted_context = _format_context(retrieved_context)
 
+    # Optional live news enrichment (if available)
     news_context = ""
     if NEWS_API_KEY:
         try:
@@ -88,9 +77,8 @@ async def generate_post_rag(
 
     final_context = formatted_context + news_context
 
-    # Build the chat prompt with system and user messages
-    prompt = create_full_prompt()
-    chain = prompt | llm | StrOutputParser()
+    # Build the chain with the single strict prompt
+    chain = STRICT_PROMPT | llm | StrOutputParser()
 
     try:
         raw_result = await chain.ainvoke({
@@ -99,15 +87,23 @@ async def generate_post_rag(
             "tone": tone,
             "platform": platform
         })
+
+        # Clean potential markdown code fences
         clean_json = raw_result.replace("```json", "").replace("```", "").strip()
         parsed = json.loads(clean_json)
+
         if isinstance(parsed, list) and len(parsed) == 5:
             return parsed
         else:
             raise ValueError("Invalid JSON structure")
+
     except Exception as e:
         print(f"RAG Parsing Error: {e}")
-        fallback = [{"text": f"AI generation fallback. Please try again. 🚀 #VoiceToPost #AI"} for _ in range(5)]
+        # Safe fallback – 5 simple posts
+        fallback = [
+            {"text": f"AI generation fallback. Please try again. 🚀 #VoiceToPost #AI"}
+            for _ in range(5)
+        ]
         return fallback
 
 def _format_context(vector_results: list) -> str:
