@@ -16,7 +16,7 @@ import vector_store
 import speech_service
 import generation_service
 import scoring
-from database import get_db, SocialCreds, encrypt_secret, decrypt_secret, download_db, upload_db
+from database import get_db, SocialCreds, encrypt_secret, decrypt_secret, download_db, upload_db   # ✅ upload_db imported
 import social_publisher
 
 load_dotenv()
@@ -148,12 +148,13 @@ async def linkedin_callback(code: str, db: Session = Depends(get_db)):
         creds = SocialCreds(user_id=user_id)
         db.add(creds)
     creds.linkedin_access_token = encrypt_secret(access_token)
-    db.commit()
+    db.commit()   # ✅ local save
+
+    # 🔥 CRITICAL: Backup to Hugging Face dataset immediately
     upload_db()
 
     await sync_linkedin_data(user_id, access_token, db)
 
-    # Return HTML with user_id (for webview to extract)
     return HTMLResponse(f"""
     <html>
         <body>
@@ -214,7 +215,9 @@ async def twitter_callback(code: str, state: str, db: Session = Depends(get_db))
     creds.twitter_access_token = encrypt_secret(access_token)
     if refresh_token:
         creds.twitter_refresh_token = encrypt_secret(refresh_token)
-    db.commit()
+    db.commit()   # ✅ local save
+
+    # 🔥 CRITICAL: Backup to Hugging Face dataset immediately
     upload_db()
 
     await sync_twitter_data(user_id, access_token, db)
