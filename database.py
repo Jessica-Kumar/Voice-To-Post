@@ -1,22 +1,36 @@
 import os
 import stat
-from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy import create_engine, event, Column, Integer, String
 from sqlalchemy.orm import declarative_base, sessionmaker
 from cryptography.fernet import Fernet
 from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.utils import EntryNotFoundError
 
-# Ensure /tmp directory exists
+# 1. UNLOCK THE FOLDER: Ensure the entire /tmp directory is fully open
 os.makedirs('/tmp/', exist_ok=True)
+try:
+    os.chmod('/tmp/', 0o777)  # Give full permissions to the folder itself
+except Exception:
+    pass  # In case it fails (rarely), we proceed anyway
 
 DB_FILENAME = "credentials.db"
 DB_PATH = f"/tmp/{DB_FILENAME}"
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
 
+# 2. TUNING THE ENGINE: Configure SQLite for better cloud compatibility
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    connect_args={"check_same_thread": False}
+    connect_args={"check_same_thread": False, "timeout": 30}
 )
+
+# 3. THE MAGIC PRAGMA: Switch to Write-Ahead Logging (WAL)
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.close()
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -78,7 +92,6 @@ def download_db():
         if os.path.exists(DB_PATH):
             os.chmod(DB_PATH, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
             print("Permissions set to 0777 to avoid readonly errors.")
-
     except EntryNotFoundError:
         print(f"Database file {DB_FILENAME} not found in the dataset. A new one will be created in /tmp/.")
     except Exception as e:
