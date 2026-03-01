@@ -12,6 +12,7 @@ from typing import Optional
 from datetime import datetime
 from pydantic import BaseModel
 import dateparser
+from dateparser.search import search_dates
 
 import vector_store
 import speech_service
@@ -329,12 +330,21 @@ async def publish_post(
 async def parse_schedule(audio_file: UploadFile = File(...)):
     audio_bytes = await audio_file.read()
     transcript = await speech_service.transcribe_audio_bytes(audio_bytes, audio_file.content_type)
-    parsed_time = dateparser.parse(
+
+    print(f"DEBUG - Scheduling Audio Transcript: '{transcript}'")
+
+    # Use search_dates to extract the time from natural language
+    found_dates = search_dates(
         transcript,
         settings={'TIMEZONE': 'Asia/Kolkata', 'RETURN_AS_TIMEZONE_AWARE': True}
     )
-    if not parsed_time:
-        raise HTTPException(status_code=400, detail="Could not parse scheduled time.")
+
+    if not found_dates:
+        raise HTTPException(status_code=400, detail=f"Could not extract a valid time from the audio: '{transcript}'")
+
+    # search_dates returns a list of tuples: [('extracted string', datetime_object)]
+    parsed_time = found_dates[0][1]
+
     return {"parsed_time": parsed_time.isoformat(), "human_text": transcript}
 
 class ConfirmPostRequest(BaseModel):
