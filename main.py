@@ -2,7 +2,7 @@ import os
 import httpx
 import asyncio
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
-from fastapi.responses import RedirectResponse, HTMLResponse
+from fastapi.responses import RedirectResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -25,14 +25,14 @@ load_dotenv()
 app = FastAPI(title="Voice-To-Post Backend API")
 scheduler = BackgroundScheduler()
 
-# OAuth App credentials from environment
+# OAuth App credentials
 LINKEDIN_CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID")
 LINKEDIN_CLIENT_SECRET = os.getenv("LINKEDIN_CLIENT_SECRET")
 TWITTER_CLIENT_ID = os.getenv("TWITTER_CLIENT_ID")
 TWITTER_CLIENT_SECRET = os.getenv("TWITTER_CLIENT_SECRET")
 BASE_URL = os.getenv("BASE_URL", "http://localhost:7860")
 
-# In-memory store for PKCE verifier (use Redis in production)
+# In‑memory store for PKCE verifier
 twitter_oauth_state = {}
 
 app.add_middleware(
@@ -47,7 +47,7 @@ app.add_middleware(
 async def startup_event():
     download_db()
     scheduler.start()
-    # Add global sample data (optional, tied to system user)
+    # Optional global sample data
     sample_data = [
         "Welcome to Voice-To-Post backend!",
         "Vector databases help in doing semantic similarity search.",
@@ -135,7 +135,7 @@ async def linkedin_callback(code: str, db: Session = Depends(get_db)):
         token_data = resp.json()
         access_token = token_data["access_token"]
 
-    # Get user ID from userinfo endpoint
+    # Get user ID
     headers = {"Authorization": f"Bearer {access_token}"}
     async with httpx.AsyncClient() as client:
         userinfo = await client.get("https://api.linkedin.com/v2/userinfo", headers=headers)
@@ -199,7 +199,7 @@ async def twitter_callback(code: str, state: str, db: Session = Depends(get_db))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Twitter token exchange failed: {str(e)}")
 
-    # Get user ID from Twitter API
+    # Get user ID
     client = tweepy.Client(bearer_token=access_token)
     me = client.get_me()
     if not me.data:
@@ -245,12 +245,13 @@ async def generate_post(
     if transcript.startswith("Error") or transcript.startswith("ERROR"):
         raise HTTPException(status_code=500, detail=transcript)
 
-    # 2. Retrieve private context from vector store (filtered by user_id)
+    # 2. Retrieve private context (filtered by user_id)
     results = vector_store.search_index(transcript, top_k=5, user_id=user_id)
     avg_distance = (
         sum([res["distance"] for res in results]) / len(results)
         if results else -1.0
     )
+    raw_context_text = " ".join([res["text"] for res in results]) if results else ""
 
     # 3. Production loop: collect exactly 5 posts passing threshold 0.45, max 15 attempts
     MAX_ATTEMPTS = 15
@@ -272,7 +273,11 @@ async def generate_post(
         for post in generated_variations:
             if "text" not in post:
                 continue
-            score_data = scoring.calculate_safety_score(post["text"], avg_distance)
+            score_data = scoring.calculate_safety_score(
+                generated_post=post["text"],
+                context_distance=avg_distance,
+                context_text=raw_context_text
+            )
             final_score = score_data["final_score"]
             all_scored.append({
                 "text": post["text"],
@@ -288,7 +293,6 @@ async def generate_post(
                     break
 
     approved_posts.sort(key=lambda x: x["score"], reverse=True)
-
     status = "success" if len(approved_posts) >= 5 else "partial_success"
     return {
         "status": status,
@@ -309,16 +313,20 @@ async def publish_post(
     platform_key = platform.lower()
     creds = db.query(SocialCreds).filter(SocialCreds.user_id == user_id).first()
     if not creds:
-        raise HTTPException(status_code=404, detail=f"No credentials found for user {user_id}. Please authenticate first.")
-
+        raise HTTPException(status_code=404, detail=f"No credentials found for user {user_id}.")
     result = await social_publisher.publish_to_platform(platform_key, post_text, creds)
+
+    # 🔥 Save the published post to the AI's memory (vector store)
+    if result and result.get("status") == "success":
+        memory_text = f"[{platform_key.capitalize()} Post History]: {post_text}"
+        vector_store.add_text_to_index([memory_text], user_id=user_id)
+
     return result
 
 # ==================== Scheduling Endpoints ====================
 
 @app.post("/parse-schedule")
 async def parse_schedule(audio_file: UploadFile = File(...)):
-    """Transcribes schedule audio and returns ISO 8601 time"""
     audio_bytes = await audio_file.read()
     transcript = await speech_service.transcribe_audio_bytes(audio_bytes, audio_file.content_type)
     parsed_time = dateparser.parse(
@@ -333,21 +341,20 @@ class ConfirmPostRequest(BaseModel):
     platform: str
     text: str
     scheduled_time: Optional[str] = None
-    user_id: str   # Frontend must send this (obtained from OAuth callback)
+    user_id: str
 
 def scheduled_publish_job(platform: str, text: str, user_id: str):
-    """
-    Background job run by APScheduler (synchronous thread).
-    Opens its own DB session, retrieves user credentials, and publishes.
-    """
     db = SessionLocal()
     try:
         creds = db.query(SocialCreds).filter(SocialCreds.user_id == user_id).first()
         if not creds:
             print(f"[Scheduled Job] No credentials for user {user_id}")
             return
-        # Run the async publisher inside this sync function
-        asyncio.run(social_publisher.publish_to_platform(platform.lower(), text, creds))
+        result = asyncio.run(social_publisher.publish_to_platform(platform.lower(), text, creds))
+        # Save to memory if successful
+        if result and result.get("status") == "success":
+            memory_text = f"[{platform.capitalize()} Post History]: {text}"
+            vector_store.add_text_to_index([memory_text], user_id=user_id)
     except Exception as e:
         print(f"[Scheduled Job] Error: {e}")
     finally:
@@ -355,7 +362,6 @@ def scheduled_publish_job(platform: str, text: str, user_id: str):
 
 @app.post("/confirm-post")
 async def confirm_post(request: ConfirmPostRequest, db: Session = Depends(get_db)):
-    # Immediate posting – await directly (async)
     if not request.scheduled_time:
         creds = db.query(SocialCreds).filter(SocialCreds.user_id == request.user_id).first()
         if not creds:
@@ -365,9 +371,11 @@ async def confirm_post(request: ConfirmPostRequest, db: Session = Depends(get_db
             request.text,
             creds
         )
+        # Save to memory if successful
+        if result and result.get("status") == "success":
+            memory_text = f"[{request.platform.capitalize()} Post History]: {request.text}"
+            vector_store.add_text_to_index([memory_text], user_id=request.user_id)
         return {"status": "published_immediately", "result": result}
-
-    # Scheduled posting
     try:
         dt = datetime.fromisoformat(request.scheduled_time)
         scheduler.add_job(
