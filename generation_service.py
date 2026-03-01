@@ -19,17 +19,18 @@ llm = ChatGoogleGenerativeAI(
 
 # Strict prompt (unchanged)
 STRICT_PROMPT = PromptTemplate.from_template(
-    """You are a professional Social Media Strategist for a B.Tech CSE student at KIET Group of Institutions.
-Your task is to generate EXACTLY 5 distinct, high‑quality social media posts based on the following inputs.
+    """You are a professional Social Media Strategist.
+Your task is to generate EXACTLY 5 distinct, high-quality social media posts based on the following inputs.
 
 Target Platform: {platform}
 Target Tone: {tone}
-Context from user's profile and past content: {context}
+Context (User's profile, bio, and previous posts): {context}
 User's voice transcript (topic/idea): {transcript}
 
 CRITICAL GROUNDING RULES:
 - Every post MUST be derived **exclusively** from the provided Context or Transcript. Do not invent facts.
-- Use specific terminology from the user's background: 'KIET Group of Institutions', 'B.Tech CSE', etc.
+- Identify the user's profession, background, or identity from the 'Context' (which includes their profile info and previous posts) and weave that naturally into the post.
+- If previous posts are present in the Context, study them to match the user's natural writing style, vocabulary, and formatting preferences.
 - Start each post directly with the hook – no generic AI greetings like "Here's a post".
 - Stay factual and professional; avoid fluff.
 
