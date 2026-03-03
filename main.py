@@ -14,6 +14,8 @@ from pydantic import BaseModel
 import dateparser
 from dateparser.search import search_dates
 
+import PyPDF2
+import io
 import vector_store
 import speech_service
 import generation_service
@@ -328,6 +330,47 @@ async def publish_post(
 
     return result
 
+
+# ==================== Enterprise Compliance: Upload Brand Policies ====================
+@app.post("/upload-policy")
+async def upload_policy(
+    user_id: str = Form(...),
+    policy_file: UploadFile = File(...)
+):
+    filename = policy_file.filename.lower()
+    content_bytes = await policy_file.read()
+    extracted_text = ""
+
+    try:
+        if filename.endswith(".txt"):
+            extracted_text = content_bytes.decode("utf-8")
+
+        elif filename.endswith(".pdf"):
+            pdf_reader = PyPDF2.PdfReader(io.BytesIO(content_bytes))
+            for page in pdf_reader.pages:
+                text = page.extract_text()
+                if text:
+                    extracted_text += text + "\n"
+        else:
+            raise HTTPException(status_code=400, detail="Only .txt and .pdf files are supported.")
+
+        if not extracted_text.strip():
+            raise HTTPException(status_code=400, detail="Could not extract any text from the file.")
+
+        # Format as a strict rule and push to the Vector Database
+        memory_text = f"[STRICT BRAND POLICY/GUIDELINE]: {extracted_text}"
+        vector_store.add_text_to_index([memory_text], user_id=user_id)
+
+        return {
+            "status": "success",
+            "message": f"Policy '{policy_file.filename}' successfully uploaded and memorized!"
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to process file: {str(e)}")
+
+    
+
 # ==================== Scheduling Endpoints ====================
 
 @app.post("/parse-schedule")
@@ -401,3 +444,4 @@ async def confirm_post(request: ConfirmPostRequest, db: Session = Depends(get_db
         return {"status": "scheduled", "message": f"Post scheduled for {dt.isoformat()}"}
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid scheduled_time format.")
+        
