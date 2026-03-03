@@ -258,7 +258,7 @@ async def generate_post(
 
     # 3. Production loop: collect exactly 5 posts passing threshold 0.45, max 15 attempts
     MAX_ATTEMPTS = 15
-    THRESHOLD = 0.45
+    THRESHOLD = 0.75
     attempts = 0
     approved_posts = []
     all_scored = []
