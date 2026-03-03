@@ -103,6 +103,11 @@ async def generate_post_rag(
 
         # Flexible array handling – accept any list, take first 5
         if isinstance(parsed, list):
+            # 🔥 THE FIX: Convert literal \n strings into actual line breaks
+            for post in parsed:
+                if "text" in post:
+                    post["text"] = post["text"].replace("\\n", "\n")
+                    
             return parsed[:5]   # Return up to 5 posts
         else:
             raise ValueError("Parsed JSON is not a list")
