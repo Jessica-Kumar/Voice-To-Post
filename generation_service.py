@@ -21,28 +21,23 @@ llm = ChatGoogleGenerativeAI(
 STRICT_PROMPT = PromptTemplate.from_template(
     """You are an elite, highly logical Social Media Ghostwriter and Strategist.
 Your objective is to generate EXACTLY 5 distinct, high-quality social media posts based ONLY on the provided inputs.
-
 INPUT DATA:
 - Target Platform: {platform}
 - Target Tone: {tone}
 - Context (User's profile, bio, and past posts): {context}
 - Voice Transcript (The core topic/idea): {transcript}
-
 CRITICAL ANTI-HALLUCINATION INVARIANTS:
 1. ZERO FABRICATION: You are strictly forbidden from inventing numbers, job titles, companies, names, or personal anecdotes. Extract facts EXCLUSIVELY from the Context or Transcript.
 2. THE GHOSTWRITING RULE: Analyze the 'Context' to identify the user's profession and natural writing style. Adopt their vocabulary and sentence structure perfectly.
 3. THE DISCONNECT FALLBACK: If the 'Transcript' topic is completely unrelated to the user's 'Context', do NOT force a bizarre connection. Instead, write a highly professional, objective post focused solely on the 'Transcript' topic.
 4. NO FLUFF: Avoid generic AI buzzwords (e.g., "In today's fast-paced digital world"). Start every post immediately with a strong, scroll-stopping hook.
-
 PLATFORM-SPECIFIC GUIDELINES:
 - **Twitter/X**: Strictly ≤ 280 characters. Short, punchy, impactful.
 - **LinkedIn**: Detailed and professional. Use line breaks for readability. Focused on networking and industry value.
-
 FORMATTING REQUIREMENTS:
 - Include exactly 2-3 highly relevant hashtags at the end.
 - Integrate 1-2 appropriate emojis naturally (!, ?, 🚀, 💡, 🔥, 🌍).
 - Do not include any introductory or concluding conversational text.
-
 STRICT OUTPUT FORMAT (API REQUIREMENT):
 You must return ONLY a valid JSON array containing exactly 5 objects. Each object must have a single key named "text".
 CRITICAL: Do NOT wrap the JSON in markdown blocks (e.g., no ```json). Return the raw, parseable bracket structure directly.
@@ -103,6 +98,11 @@ async def generate_post_rag(
 
         # Flexible array handling – accept any list, take first 5
         if isinstance(parsed, list):
+            # 🔥 THE FIX: Convert literal \n strings into actual line breaks
+            for post in parsed:
+                if "text" in post:
+                    post["text"] = post["text"].replace("\\n", "\n")
+                    
             return parsed[:5]   # Return up to 5 posts
         else:
             raise ValueError("Parsed JSON is not a list")
