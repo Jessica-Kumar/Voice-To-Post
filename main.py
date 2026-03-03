@@ -311,13 +311,17 @@ async def publish_post(
     user_id: str = Form(...),
     db: Session = Depends(get_db)
 ):
+    # 1. Catch literal \n characters from Swagger copy-pasting and turn them into real line breaks
+    post_text = post_text.replace("\\n", "\n")
+
+    # 2. Proceed with publishing
     platform_key = platform.lower()
     creds = db.query(SocialCreds).filter(SocialCreds.user_id == user_id).first()
     if not creds:
         raise HTTPException(status_code=404, detail=f"No credentials found for user {user_id}.")
     result = await social_publisher.publish_to_platform(platform_key, post_text, creds)
 
-    # 🔥 Save the published post to the AI's memory (vector store)
+    # 3. Save the published post to the AI's memory (vector store)
     if result and result.get("status") == "success":
         memory_text = f"[{platform_key.capitalize()} Post History]: {post_text}"
         vector_store.add_text_to_index([memory_text], user_id=user_id)
