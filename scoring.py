@@ -7,35 +7,38 @@ def calculate_safety_score(
     context_text: str = ""
 ) -> Dict[str, Any]:
     """
-    Implements the Safety Gatekeeper scoring logic deterministically.
+    Softened deterministic scoring.
     Formula: C = 0.3(AI Confidence) + 0.3(Retrieval Relevance) + 0.3(Safety Score) + 0.1(Engagement Potential)
     """
-    # 1. AI CONFIDENCE (Lexical Grounding)
+    # 1. AI CONFIDENCE (Softened Lexical Grounding)
     if not context_text or context_distance == -1.0:
-        # Fallback: simple length-based heuristic
         post_word_count = len(generated_post.split())
-        ai_confidence = 0.8 if 15 <= post_word_count <= 100 else 0.4
+        ai_confidence = 0.8 if 15 <= post_word_count <= 100 else 0.5
     else:
-        post_words = set(re.findall(r'\b\w{5,}\b', generated_post.lower()))
-        db_words = set(re.findall(r'\b\w{5,}\b', context_text.lower()))
+        post_words = set(re.findall(r'\b\w{4,}\b', generated_post.lower()))
+        db_words = set(re.findall(r'\b\w{4,}\b', context_text.lower()))
 
         if not db_words:
-            ai_confidence = 0.5
+            ai_confidence = 0.6
         else:
-            overlap = post_words.intersection(db_words)
-            # hit_rate: how many distinct "meaningful" words from the post appear in the context
-            # We divide by 3 to keep score reasonable (max ~3 hits)
-            hit_rate = len(overlap) / 3.0
-            ai_confidence = min(1.0, 0.4 + (hit_rate * 0.6))
+            # Substring matching to catch "engineer" vs "engineering"
+            hits = 0
+            for p_word in post_words:
+                if any(p_word in d_word or d_word in p_word for d_word in db_words):
+                    hits += 1
 
-    # 2. RETRIEVAL RELEVANCE (FAISS L2 Distance)
-    max_d = 2.0
+            # Only require 2 hits for max score, higher base floor
+            hit_rate = hits / 2.0
+            ai_confidence = min(1.0, 0.5 + (hit_rate * 0.5))
+
+    # 2. RETRIEVAL RELEVANCE (Relaxed FAISS Bounds)
+    max_d = 3.0
     if context_distance == -1.0:
-        retrieval_relevance = 0.5
+        retrieval_relevance = 0.6
     else:
         retrieval_relevance = max(0.0, 1.0 - (context_distance / max_d))
 
-    # 3. SAFETY SCORE (Content Boundaries)
+    # 3. SAFETY SCORE (unchanged)
     safety_score = 1.0
     forbidden_terms = ["spam", "hate", "violence", "scam", "crypto", "giveaway"]
     if any(term in generated_post.lower() for term in forbidden_terms):
@@ -45,7 +48,7 @@ def calculate_safety_score(
         safety_score -= 0.5
     safety_score = max(0.0, safety_score)
 
-    # 4. ENGAGEMENT POTENTIAL (Social Triggers)
+    # 4. ENGAGEMENT POTENTIAL (unchanged)
     engagement_potential = 0.4
     hashtag_count = generated_post.count("#")
     if 1 <= hashtag_count <= 3:
