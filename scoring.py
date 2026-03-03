@@ -7,14 +7,16 @@ def calculate_safety_score(
     context_text: str = ""
 ) -> Dict[str, Any]:
     """
-    Softened deterministic scoring.
+    Softened deterministic scoring with boosted base floor for cold start.
     Formula: C = 0.3(AI Confidence) + 0.3(Retrieval Relevance) + 0.3(Safety Score) + 0.1(Engagement Potential)
     """
-    # 1. AI CONFIDENCE (Softened Lexical Grounding)
+    # 1. AI CONFIDENCE & RETRIEVAL RELEVANCE (boosted when no context)
     if not context_text or context_distance == -1.0:
-        post_word_count = len(generated_post.split())
-        ai_confidence = 0.8 if 15 <= post_word_count <= 100 else 0.5
+        # COLD START: no context – give high base scores
+        ai_confidence = 0.85
+        retrieval_relevance = 0.80
     else:
+        # Normal case: compute from lexical overlap
         post_words = set(re.findall(r'\b\w{4,}\b', generated_post.lower()))
         db_words = set(re.findall(r'\b\w{4,}\b', context_text.lower()))
 
@@ -31,11 +33,8 @@ def calculate_safety_score(
             hit_rate = hits / 2.0
             ai_confidence = min(1.0, 0.5 + (hit_rate * 0.5))
 
-    # 2. RETRIEVAL RELEVANCE (Relaxed FAISS Bounds)
-    max_d = 3.0
-    if context_distance == -1.0:
-        retrieval_relevance = 0.6
-    else:
+        # Retrieval relevance from FAISS distance
+        max_d = 3.0
         retrieval_relevance = max(0.0, 1.0 - (context_distance / max_d))
 
     # 3. SAFETY SCORE (unchanged)
