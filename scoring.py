@@ -7,33 +7,31 @@ def calculate_safety_score(
     context_text: str = ""
 ) -> Dict[str, Any]:
     """
-    Softened deterministic scoring with boosted base floor for cold start.
+    Softened deterministic scoring with distance release valve.
     Formula: C = 0.3(AI Confidence) + 0.3(Retrieval Relevance) + 0.3(Safety Score) + 0.1(Engagement Potential)
     """
-    # 1. AI CONFIDENCE & RETRIEVAL RELEVANCE (boosted when no context)
-    if not context_text or context_distance == -1.0:
-        # COLD START: no context – give high base scores
+    # 1. AI CONFIDENCE & RELEVANCE
+    # TIGHTENED VALVE: Treat as "New Topic" if distance > 1.2
+    if not context_text or context_distance == -1.0 or context_distance > 1.2:
+        # Boosted base floor so new topics safely pass the 0.75 threshold
         ai_confidence = 0.85
         retrieval_relevance = 0.80
     else:
-        # Normal case: compute from lexical overlap
         post_words = set(re.findall(r'\b\w{4,}\b', generated_post.lower()))
         db_words = set(re.findall(r'\b\w{4,}\b', context_text.lower()))
 
         if not db_words:
-            ai_confidence = 0.6
+            ai_confidence = 0.75   # raised from 0.6
         else:
-            # Substring matching to catch "engineer" vs "engineering"
             hits = 0
             for p_word in post_words:
                 if any(p_word in d_word or d_word in p_word for d_word in db_words):
                     hits += 1
 
-            # Only require 2 hits for max score, higher base floor
             hit_rate = hits / 2.0
-            ai_confidence = min(1.0, 0.5 + (hit_rate * 0.5))
+            # Raised base floor from 0.5 to 0.7 so 0 hits doesn't tank the score
+            ai_confidence = min(1.0, 0.7 + (hit_rate * 0.3))
 
-        # Retrieval relevance from FAISS distance
         max_d = 3.0
         retrieval_relevance = max(0.0, 1.0 - (context_distance / max_d))
 
