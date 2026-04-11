@@ -1,20 +1,29 @@
+# --- Core API & Server ---
 fastapi
 uvicorn
 pydantic
-faiss-cpu
-sentence-transformers
 python-multipart
 httpx
+
+# --- AI, LLM & RAG Pipeline ---
+faiss-cpu
+sentence-transformers
 langchain
 langchain-google-genai
-google-generativeai
-python-dotenv
-sqlalchemy
-newsapi-python
-cryptography
+google-generativeai>=0.5.2
 huggingface_hub
+
+# --- Database & Security ---
+sqlalchemy
+cryptography
+
+# --- External APIs & File Processing ---
+newsapi-python
+tweepy>=4.14.0
+python-dotenv
+PyPDF2>=3.0.0
+
+# --- Scheduling & Time Management ---
 dateparser==1.2.0
 apscheduler==3.10.4
-tweepy>=4.14.0
 pytz
-PyPDF2>=3.0.0
