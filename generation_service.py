@@ -9,18 +9,21 @@ from newsapi import NewsApiClient
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 
-# Stable LLM with low temperature and top_p – remains unchanged
+# FIX: Raised temperature 0.2→0.9 and top_p 0.1→0.95
+# At 0.2/0.1, all 5 posts were nearly identical in structure → same score.
+# Higher temperature produces genuinely different lengths, emoji usage,
+# hashtag counts, and hooks — which scoring.py can now differentiate.
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     google_api_key=GEMINI_API_KEY,
-    temperature=0.2,
-    top_p=0.1
+    temperature=0.9,
+    top_p=0.95
 )
 
-# Strict prompt (unchanged)
 STRICT_PROMPT = PromptTemplate.from_template(
-    """You are an elite, highly logical Social Media Ghostwriter and Strategist.
-Your objective is to generate EXACTLY 5 distinct, high-quality social media posts based ONLY on the provided inputs.
+    """You are an elite Social Media Ghostwriter and Strategist.
+
+Your objective is to generate EXACTLY 5 DISTINCT social media posts based ONLY on the provided inputs.
 
 INPUT DATA:
 - Target Platform: {platform}
@@ -29,32 +32,37 @@ INPUT DATA:
 - Voice Transcript (The core topic/idea): {transcript}
 
 CRITICAL ANTI-HALLUCINATION INVARIANTS:
-1. ZERO FABRICATION: You are strictly forbidden from inventing numbers, job titles, companies, names, or personal anecdotes. Extract facts EXCLUSIVELY from the Context or Transcript.
-2. THE GHOSTWRITING RULE: Analyze the 'Context' to identify the user's profession and natural writing style. Adopt their vocabulary and sentence structure perfectly.
-3. THE DISCONNECT FALLBACK: If the 'Transcript' topic is completely unrelated to the user's 'Context', do NOT force a bizarre connection. Instead, write a highly professional, objective post focused solely on the 'Transcript' topic.
-4. NO FLUFF: Avoid generic AI buzzwords (e.g., "In today's fast-paced digital world"). Start every post immediately with a strong, scroll-stopping hook.
+1. ZERO FABRICATION: Do not invent numbers, job titles, companies, or names. Use ONLY facts from Context or Transcript.
+2. THE GHOSTWRITING RULE: Adopt the user's vocabulary and sentence structure from their Context.
+3. THE DISCONNECT FALLBACK: If Transcript is unrelated to Context, write a professional post focused purely on the Transcript topic.
+4. NO FLUFF: No generic AI phrases. Start every post with a strong, scroll-stopping hook.
 
 PLATFORM-SPECIFIC GUIDELINES:
 - **Twitter/X**: Strictly ≤ 280 characters. Short, punchy, impactful.
-- **LinkedIn**: Detailed and professional. Use line breaks for readability. Focused on networking and industry value.
+- **LinkedIn**: 150–600 words. Use line breaks. Professional and insightful.
 
-FORMATTING REQUIREMENTS:
-- Include exactly 2-3 highly relevant hashtags at the end.
-- Integrate 1-2 appropriate emojis naturally (!, ?, 🚀, 💡, 🔥, 🌍).
-- Do not include any introductory or concluding conversational text.
+DIVERSITY REQUIREMENT — THIS IS CRITICAL:
+Each of the 5 posts MUST be meaningfully different from the others:
+- Post 1: Hook with a bold statement. 2–3 hashtags. 1–2 emojis.
+- Post 2: Opens with a question. 1 hashtag only. No emojis.
+- Post 3: Storytelling / narrative style. 2 hashtags. 2–3 emojis.
+- Post 4: Data or insight-driven. End with a CTA ("Comment below", "Share if you agree", etc.). 3 hashtags.
+- Post 5: Short and punchy (even on LinkedIn — max 3 sentences). 1–2 hashtags. 1 emoji.
 
-STRICT OUTPUT FORMAT (API REQUIREMENT):
-You must return ONLY a valid JSON array containing exactly 5 objects. Each object must have a single key named "text".
-CRITICAL: Do NOT wrap the JSON in markdown blocks (e.g., no ```json). Return the raw, parseable bracket structure directly.
+STRICT OUTPUT FORMAT:
+Return ONLY a valid JSON array of exactly 5 objects, each with a single "text" key.
+Do NOT wrap in markdown (no ```json). Return raw JSON only.
+
 [
-  {{"text": "<First engaging post here>"}},
-  {{"text": "<Second engaging post here>"}},
-  {{"text": "<Third engaging post here>"}},
-  {{"text": "<Fourth engaging post here>"}},
-  {{"text": "<Fifth engaging post here>"}}
+  {{"text": "<Post 1>"}},
+  {{"text": "<Post 2>"}},
+  {{"text": "<Post 3>"}},
+  {{"text": "<Post 4>"}},
+  {{"text": "<Post 5>"}}
 ]
 """
 )
+
 
 async def generate_post_rag(
     transcript: str,
@@ -63,7 +71,7 @@ async def generate_post_rag(
     platform: str,
     num_variations: int = 5
 ) -> list:
-    # Format the vector store results
+
     formatted_context = _format_context(retrieved_context)
 
     # Optional live news enrichment
@@ -74,13 +82,14 @@ async def generate_post_rag(
             query = transcript[:50]
             headlines = newsapi.get_everything(q=query, language='en', sort_by='relevancy', page_size=3)
             if headlines['status'] == 'ok' and headlines['totalResults'] > 0:
-                news_context = "\n\nRelevant Live News:\n" + "\n".join([f"- {a['title']}" for a in headlines['articles']])
+                news_context = "\n\nRelevant Live News:\n" + "\n".join(
+                    [f"- {a['title']}" for a in headlines['articles']]
+                )
         except Exception as e:
             print(f"NewsAPI Error: {e}")
 
     final_context = formatted_context + news_context
 
-    # Build chain
     chain = STRICT_PROMPT | llm | StrOutputParser()
 
     try:
@@ -91,9 +100,9 @@ async def generate_post_rag(
             "platform": platform
         })
 
-        print(f"Raw LLM output: {raw_result[:500]}")  # Debug log
+        print(f"Raw LLM output: {raw_result[:500]}")
 
-        # 🔥 Regex extraction – find the first JSON array
+        # Regex extraction — find the first JSON array
         match = re.search(r'\[.*\]', raw_result, re.DOTALL)
         if not match:
             raise ValueError("No JSON array found in response")
@@ -101,25 +110,22 @@ async def generate_post_rag(
         clean_json = match.group(0)
         parsed = json.loads(clean_json)
 
-        # Flexible array handling – accept any list, take first 5
         if isinstance(parsed, list):
-            # 🔥 THE FIX: Convert literal \n strings into actual line breaks
             for post in parsed:
                 if "text" in post:
                     post["text"] = post["text"].replace("\\n", "\n")
-                    
-            return parsed[:5]   # Return up to 5 posts
+            return parsed[:5]
         else:
             raise ValueError("Parsed JSON is not a list")
 
     except Exception as e:
         print(f"RAG Parsing Error: {e}")
-        # Safe fallback
         fallback = [
             {"text": f"AI generation fallback. Please try again. 🚀 #VoiceToPost #AI"}
             for _ in range(5)
         ]
         return fallback
+
 
 def _format_context(vector_results: list) -> str:
     if not vector_results:
