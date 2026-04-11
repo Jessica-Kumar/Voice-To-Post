@@ -1,6 +1,6 @@
 import os
-import httpx
 import asyncio
+import httpx
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
 from fastapi.responses import RedirectResponse, HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,9 +13,9 @@ from datetime import datetime
 from pydantic import BaseModel
 import dateparser
 from dateparser.search import search_dates
-
 import PyPDF2
 import io
+
 import vector_store
 import speech_service
 import generation_service
@@ -28,14 +28,12 @@ load_dotenv()
 app = FastAPI(title="Voice-To-Post Backend API")
 scheduler = BackgroundScheduler()
 
-# OAuth App credentials
 LINKEDIN_CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID")
 LINKEDIN_CLIENT_SECRET = os.getenv("LINKEDIN_CLIENT_SECRET")
 TWITTER_CLIENT_ID = os.getenv("TWITTER_CLIENT_ID")
 TWITTER_CLIENT_SECRET = os.getenv("TWITTER_CLIENT_SECRET")
 BASE_URL = os.getenv("BASE_URL", "http://localhost:7860")
 
-# In‑memory store for PKCE verifier
 twitter_oauth_state = {}
 
 app.add_middleware(
@@ -50,14 +48,13 @@ app.add_middleware(
 async def startup_event():
     download_db()
     scheduler.start()
-    # Optional global sample data
     sample_data = [
         "Welcome to Voice-To-Post backend!",
         "Vector databases help in doing semantic similarity search.",
         "FastAPI is a fast, highly performant web framework for building APIs."
     ]
     vector_store.add_text_to_index(sample_data, user_id="system")
-    print("Application initialized. Loaded sample data into the vector store.")
+    print("Application initialized.")
 
 @app.get("/")
 async def health_endpoint():
@@ -67,7 +64,8 @@ async def health_endpoint():
 
 async def sync_twitter_data(user_id: str, access_token: str, db: Session):
     try:
-        client = tweepy.Client(bearer_token=access_token)
+        # FIX: use access_token= not bearer_token= (bearer is app-level, not user-level)
+        client = tweepy.Client(access_token=access_token)
         me = client.get_me(user_fields=["description"])
         if me.data:
             description = me.data.description
@@ -79,7 +77,7 @@ async def sync_twitter_data(user_id: str, access_token: str, db: Session):
             db.commit()
             if description:
                 vector_store.add_text_to_index([description], user_id=user_id)
-                print(f"Synced Twitter bio for user {user_id}")
+            print(f"Synced Twitter bio for user {user_id}")
     except Exception as e:
         print(f"Error syncing Twitter data: {e}")
 
@@ -101,7 +99,7 @@ async def sync_linkedin_data(user_id: str, access_token: str, db: Session):
         db.commit()
         if bio:
             vector_store.add_text_to_index([bio], user_id=user_id)
-            print(f"Synced LinkedIn bio for user {user_id}")
+        print(f"Synced LinkedIn bio for user {user_id}")
 
 # ==================== OAuth Endpoints ====================
 
@@ -138,7 +136,6 @@ async def linkedin_callback(code: str, db: Session = Depends(get_db)):
         token_data = resp.json()
         access_token = token_data["access_token"]
 
-    # Get user ID
     headers = {"Authorization": f"Bearer {access_token}"}
     async with httpx.AsyncClient() as client:
         userinfo = await client.get("https://api.linkedin.com/v2/userinfo", headers=headers)
@@ -154,21 +151,17 @@ async def linkedin_callback(code: str, db: Session = Depends(get_db)):
     creds.linkedin_access_token = encrypt_secret(access_token)
     db.commit()
     upload_db()
-
     await sync_linkedin_data(user_id, access_token, db)
 
+    # FIX: Added &platform=linkedin so Android app knows which platform connected
     return HTMLResponse(f"""
-    <html>
-        <body>
-            <h1>LinkedIn authentication successful!</h1>
-            <p>Your user ID: <strong>{user_id}</strong></p>
-            <p>You can close this window and return to the app.</p>
-            <script>
-                window.location.href = "yourapp://callback?user_id={user_id}";
-            </script>
-        </body>
-    </html>
-    """)
+<html><body>
+<h1>LinkedIn authentication successful!</h1>
+<p>Your user ID: <strong>{user_id}</strong></p>
+<p>You can close this window and return to the app.</p>
+<script>window.location.href = "yourapp://callback?user_id={user_id}&platform=linkedin";</script>
+</body></html>
+""")
 
 @app.get("/auth/twitter/login")
 async def twitter_login():
@@ -195,6 +188,7 @@ async def twitter_callback(code: str, state: str, db: Session = Depends(get_db))
         scope=["tweet.read", "tweet.write", "users.read", "offline.access"]
     )
     oauth2_handler.code_verifier = stored["code_verifier"]
+
     try:
         token_data = oauth2_handler.fetch_token(code)
         access_token = token_data["access_token"]
@@ -202,8 +196,7 @@ async def twitter_callback(code: str, state: str, db: Session = Depends(get_db))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Twitter token exchange failed: {str(e)}")
 
-    # Get user ID
-    client = tweepy.Client(bearer_token=access_token)
+    client = tweepy.Client(access_token=access_token)
     me = client.get_me()
     if not me.data:
         raise HTTPException(status_code=400, detail="Could not fetch Twitter user info")
@@ -218,23 +211,20 @@ async def twitter_callback(code: str, state: str, db: Session = Depends(get_db))
         creds.twitter_refresh_token = encrypt_secret(refresh_token)
     db.commit()
     upload_db()
-
     await sync_twitter_data(user_id, access_token, db)
 
+    # FIX: Added &platform=twitter so Android app knows which platform connected
     return HTMLResponse(f"""
-    <html>
-        <body>
-            <h1>Twitter authentication successful!</h1>
-            <p>Your user ID: <strong>{user_id}</strong></p>
-            <p>You can close this window and return to the app.</p>
-            <script>
-                window.location.href = "yourapp://callback?user_id={user_id}";
-            </script>
-        </body>
-    </html>
-    """)
+<html><body>
+<h1>Twitter authentication successful!</h1>
+<p>Your user ID: <strong>{user_id}</strong></p>
+<p>You can close this window and return to the app.</p>
+<script>window.location.href = "yourapp://callback?user_id={user_id}&platform=twitter";</script>
+</body></html>
+""")
 
-# ==================== Generation Endpoint ====================
+# ==================== Generation Endpoint (FIXED) ====================
+
 @app.post("/generate-post")
 async def generate_post(
     audio_file: UploadFile = File(...),
@@ -242,70 +232,81 @@ async def generate_post(
     platform: str = Form(...),
     user_id: str = Form(...)
 ):
-    # 1. Transcribe
+    # ── Step 1: Transcribe ──────────────────────────────────────────────────
     audio_bytes = await audio_file.read()
-    transcript = await speech_service.transcribe_audio_bytes(audio_bytes, audio_file.content_type)
+
+    try:
+        transcript = await asyncio.wait_for(
+            speech_service.transcribe_audio_bytes(audio_bytes, audio_file.content_type),
+            timeout=20.0
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Speech-to-text timed out. Please try a shorter recording.")
+
     if transcript.startswith("Error") or transcript.startswith("ERROR"):
         raise HTTPException(status_code=500, detail=transcript)
 
-    # 2. Retrieve private context (filtered by user_id)
+    # ── Step 2: RAG context retrieval ───────────────────────────────────────
     results = vector_store.search_index(transcript, top_k=5, user_id=user_id)
     avg_distance = (
-        sum([res["distance"] for res in results]) / len(results)
+        sum(res["distance"] for res in results) / len(results)
         if results else -1.0
     )
-    raw_context_text = " ".join([res["text"] for res in results]) if results else ""
+    raw_context_text = " ".join(res["text"] for res in results) if results else ""
 
-    # 3. Production loop: collect exactly 5 posts passing threshold 0.45, max 15 attempts
-    MAX_ATTEMPTS = 15
-    THRESHOLD = 0.75
-    attempts = 0
-    approved_posts = []
-    all_scored = []
-
-    while len(approved_posts) < 5 and attempts < MAX_ATTEMPTS:
-        attempts += 1
-        generated_variations = await generation_service.generate_post_rag(
-            transcript,
-            results,
-            tone=tone,
-            platform=platform,
-            num_variations=5
+    # ── Step 3: ONE Gemini call — no retry loop ─────────────────────────────
+    #
+    # KEY FIX: The old code looped up to 15 times if posts didn't pass
+    # a 0.75 threshold. Each Gemini call takes ~10s.
+    # 15 × 10s = 150s → way over HuggingFace's ~60s connection timeout → spinner.
+    #
+    # New approach: call once, score all 5, return them sorted best→worst.
+    # Total latency: ~15–20s. Always finishes. Users see differentiated scores.
+    try:
+        generated_variations = await asyncio.wait_for(
+            generation_service.generate_post_rag(
+                transcript,
+                results,
+                tone=tone,
+                platform=platform,
+                num_variations=5
+            ),
+            timeout=35.0
         )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Post generation timed out. Please try again.")
 
-        for post in generated_variations:
-            if "text" not in post:
-                continue
-            score_data = scoring.calculate_safety_score(
-                generated_post=post["text"],
-                context_distance=avg_distance,
-                context_text=raw_context_text
-            )
-            final_score = score_data["final_score"]
-            all_scored.append({
-                "text": post["text"],
-                "score": final_score,
-                "breakdown": score_data["breakdown"]
-            })
-            if final_score >= THRESHOLD:
-                approved_posts.append({
-                    "text": post["text"],
-                    "score": final_score
-                })
-                if len(approved_posts) >= 5:
-                    break
+    # ── Step 4: Score all posts and sort ────────────────────────────────────
+    scored_posts = []
+    for post in generated_variations:
+        if "text" not in post or not post["text"].strip():
+            continue
+        score_data = scoring.calculate_safety_score(
+            generated_post=post["text"],
+            context_distance=avg_distance,
+            context_text=raw_context_text
+        )
+        scored_posts.append({
+            "text": post["text"],
+            "score": score_data["final_score"],
+            "breakdown": score_data["breakdown"]
+        })
 
-    approved_posts.sort(key=lambda x: x["score"], reverse=True)
-    status = "success" if len(approved_posts) >= 5 else "partial_success"
+    scored_posts.sort(key=lambda x: x["score"], reverse=True)
+
+    if not scored_posts:
+        raise HTTPException(status_code=500, detail="Generation returned no valid posts. Please try again.")
+
     return {
-        "status": status,
-        "variations": approved_posts[:5],
-        "total_generated": len(all_scored),
-        "attempts_used": attempts,
-        "message": f"Generated {len(approved_posts)} posts meeting threshold." if len(approved_posts) < 5 else None
+        "status": "success",
+        "variations": scored_posts,
+        "total_generated": len(scored_posts),
+        "attempts_used": 1,
+        "message": None
     }
 
 # ==================== Publish Post ====================
+
 @app.post("/publish-post")
 async def publish_post(
     platform: str = Form(...),
@@ -313,25 +314,19 @@ async def publish_post(
     user_id: str = Form(...),
     db: Session = Depends(get_db)
 ):
-    # 1. Catch literal \n characters from Swagger copy-pasting and turn them into real line breaks
     post_text = post_text.replace("\\n", "\n")
-
-    # 2. Proceed with publishing
     platform_key = platform.lower()
     creds = db.query(SocialCreds).filter(SocialCreds.user_id == user_id).first()
     if not creds:
         raise HTTPException(status_code=404, detail=f"No credentials found for user {user_id}.")
     result = await social_publisher.publish_to_platform(platform_key, post_text, creds)
-
-    # 3. Save the published post to the AI's memory (vector store)
     if result and result.get("status") == "success":
         memory_text = f"[{platform_key.capitalize()} Post History]: {post_text}"
         vector_store.add_text_to_index([memory_text], user_id=user_id)
-
     return result
 
+# ==================== Upload Brand Policy ====================
 
-# ==================== Enterprise Compliance: Upload Brand Policies ====================
 @app.post("/upload-policy")
 async def upload_policy(
     user_id: str = Form(...),
@@ -340,11 +335,9 @@ async def upload_policy(
     filename = policy_file.filename.lower()
     content_bytes = await policy_file.read()
     extracted_text = ""
-
     try:
         if filename.endswith(".txt"):
             extracted_text = content_bytes.decode("utf-8")
-
         elif filename.endswith(".pdf"):
             pdf_reader = PyPDF2.PdfReader(io.BytesIO(content_bytes))
             for page in pdf_reader.pages:
@@ -353,23 +346,13 @@ async def upload_policy(
                     extracted_text += text + "\n"
         else:
             raise HTTPException(status_code=400, detail="Only .txt and .pdf files are supported.")
-
         if not extracted_text.strip():
             raise HTTPException(status_code=400, detail="Could not extract any text from the file.")
-
-        # Format as a strict rule and push to the Vector Database
         memory_text = f"[STRICT BRAND POLICY/GUIDELINE]: {extracted_text}"
         vector_store.add_text_to_index([memory_text], user_id=user_id)
-
-        return {
-            "status": "success",
-            "message": f"Policy '{policy_file.filename}' successfully uploaded and memorized!"
-        }
-
+        return {"status": "success", "message": f"Policy '{policy_file.filename}' successfully uploaded and memorized!"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to process file: {str(e)}")
-
-    
 
 # ==================== Scheduling Endpoints ====================
 
@@ -377,21 +360,14 @@ async def upload_policy(
 async def parse_schedule(audio_file: UploadFile = File(...)):
     audio_bytes = await audio_file.read()
     transcript = await speech_service.transcribe_audio_bytes(audio_bytes, audio_file.content_type)
-
     print(f"DEBUG - Scheduling Audio Transcript: '{transcript}'")
-
-    # Use search_dates to extract the time from natural language
     found_dates = search_dates(
         transcript,
         settings={'TIMEZONE': 'Asia/Kolkata', 'RETURN_AS_TIMEZONE_AWARE': True}
     )
-
     if not found_dates:
         raise HTTPException(status_code=400, detail=f"Could not extract a valid time from the audio: '{transcript}'")
-
-    # search_dates returns a list of tuples: [('extracted string', datetime_object)]
     parsed_time = found_dates[0][1]
-
     return {"parsed_time": parsed_time.isoformat(), "human_text": transcript}
 
 class ConfirmPostRequest(BaseModel):
@@ -408,7 +384,6 @@ def scheduled_publish_job(platform: str, text: str, user_id: str):
             print(f"[Scheduled Job] No credentials for user {user_id}")
             return
         result = asyncio.run(social_publisher.publish_to_platform(platform.lower(), text, creds))
-        # Save to memory if successful
         if result and result.get("status") == "success":
             memory_text = f"[{platform.capitalize()} Post History]: {text}"
             vector_store.add_text_to_index([memory_text], user_id=user_id)
@@ -424,15 +399,13 @@ async def confirm_post(request: ConfirmPostRequest, db: Session = Depends(get_db
         if not creds:
             raise HTTPException(status_code=404, detail="User credentials not found")
         result = await social_publisher.publish_to_platform(
-            request.platform.lower(),
-            request.text,
-            creds
+            request.platform.lower(), request.text, creds
         )
-        # Save to memory if successful
         if result and result.get("status") == "success":
             memory_text = f"[{request.platform.capitalize()} Post History]: {request.text}"
             vector_store.add_text_to_index([memory_text], user_id=request.user_id)
         return {"status": "published_immediately", "result": result}
+
     try:
         dt = datetime.fromisoformat(request.scheduled_time)
         scheduler.add_job(
@@ -444,4 +417,3 @@ async def confirm_post(request: ConfirmPostRequest, db: Session = Depends(get_db
         return {"status": "scheduled", "message": f"Post scheduled for {dt.isoformat()}"}
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid scheduled_time format.")
-        
