@@ -5,6 +5,9 @@ faiss-cpu
 sentence-transformers
 python-multipart
 httpx
+langchain
+langchain-google-genai
+google-generativeai
 python-dotenv
 sqlalchemy
 newsapi-python
@@ -14,11 +17,4 @@ dateparser==1.2.0
 apscheduler==3.10.4
 tweepy>=4.14.0
 pytz
-PyPDF2
-
-# Direct Google GenAI SDK — replaces langchain-google-genai to avoid version conflicts
-# with newer models like gemini-2.5-flash
-google-generativeai>=0.8.0
-
-# Keep langchain core for PromptTemplate only (used nowhere now, but safe to keep)
-# langchain-google-genai is REMOVED — it was causing silent failures with gemini-2.5-flash
+PyPDF2>=3.0.0
