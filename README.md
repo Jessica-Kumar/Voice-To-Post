@@ -1,3 +1,13 @@
+---
+title: Voice-To-Post
+emoji: 🎙️
+colorFrom: purple
+colorTo: blue
+sdk: docker
+pinned: false
+app_port: 7860
+---
+
 # Voice-To-Post v2.0 - AI-Powered Social Media Generator
 
 **AI-powered voice-to-social-media platform with RAG, multi-platform support, and FREE image generation**
