@@ -249,6 +249,81 @@ async def get_current_user_info(
         "last_login": current_user.last_login.isoformat() if current_user.last_login else None
     }
 
+# ==================== Zero-Friction Mobile Auth ====================
+from fastapi.security import HTTPBearer as _HTTPBearer, HTTPAuthorizationCredentials as _HTTPCreds
+_bearer_optional = _HTTPBearer(auto_error=False)
+
+async def resolve_user_id(
+    request: Request,
+    user_id: Optional[str] = Form(None),
+    credentials: Optional[_HTTPCreds] = Depends(_bearer_optional),
+    db: Session = Depends(get_db),
+) -> str:
+    """
+    Resolves the acting user ID from the request - used as a FastAPI Depends.
+    Priority order:
+      1. Authorization: Bearer <JWT>   ← preferred (issued by /auth/device or /auth/login)
+      2. X-API-Key header              ← for server-to-server
+      3. Plain user_id form field      ← development only (blocked in production)
+    Android users never see this - the app handles it automatically.
+    """
+    if credentials is not None:
+        payload = auth_service.decode_access_token(credentials.credentials)
+        uid = payload.get("sub")
+        if not uid:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+        return uid
+
+    api_key = request.headers.get("x-api-key")
+    if api_key:
+        uid = auth_service.verify_api_key(db, api_key)
+        if not uid:
+            raise HTTPException(status_code=401, detail="Invalid or expired API key")
+        return uid
+
+    if user_id:
+        if ENVIRONMENT == "production":
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication required. Call POST /auth/device once on first launch "
+                       "and send Authorization: Bearer <token> on every request."
+            )
+        return user_id
+
+    raise HTTPException(status_code=401, detail="Authentication required.")
+
+
+@app.post("/auth/device")
+@limiter.limit(RATE_LIMITS["auth"])
+async def device_signup(request: Request, db: Session = Depends(get_db)):
+    """
+    ZERO-FRICTION signup for the Android app.
+    Call ONCE on first app launch (no email/password needed).
+    Store the returned user_id + access_token in the app, then send
+    'Authorization: Bearer <access_token>' on every API call.
+    Users never see a login screen.
+    """
+    import uuid, secrets
+    device_tag = uuid.uuid4().hex[:12]
+    email = f"device_{device_tag}@app.local"
+    password = secrets.token_urlsafe(24)
+    try:
+        user = auth_service.create_user(db, email, password)
+        upload_db()
+        token = auth_service.create_access_token({"sub": user.user_id})
+        return {
+            "status": "success",
+            "user_id": user.user_id,
+            "access_token": token,
+            "token_type": "bearer",
+            "message": "Store these securely and reuse on every request."
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==================== Bio Syncing Helpers ====================
 
 async def sync_twitter_data(user_id: str, access_token: str, db: Session):
