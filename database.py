@@ -1,6 +1,7 @@
 import os
 import stat
-from sqlalchemy import create_engine, event, Column, Integer, String
+from datetime import datetime
+from sqlalchemy import create_engine, event, Column, Integer, String, DateTime
 from sqlalchemy.orm import declarative_base, sessionmaker
 from cryptography.fernet import Fernet
 from huggingface_hub import HfApi, hf_hub_download
@@ -49,6 +50,21 @@ class SocialCreds(Base):
     linkedin_vanity_name = Column(String, nullable=True)
     linkedin_headline = Column(String, nullable=True)
 
+    # Discord & Medium Manual Integration
+    discord_webhook_url = Column(String, nullable=True)
+    medium_integration_token = Column(String, nullable=True)
+
+class ScheduledPost(Base):
+    """Persisted scheduled posts so they survive Space restarts."""
+    __tablename__ = "scheduled_posts"
+    id = Column(Integer, primary_key=True, index=True)
+    platform = Column(String, nullable=False)
+    text = Column(String, nullable=False)
+    user_id = Column(String, index=True, nullable=False)
+    scheduled_time = Column(String, nullable=False)  # ISO 8601 timestamp
+    status = Column(String, default="pending")       # pending | published | failed
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 # Encryption setup
 ENV_KEY = os.getenv("ENCRYPTION_KEY")
 if not ENV_KEY:
@@ -70,7 +86,7 @@ Base.metadata.create_all(bind=engine)
 
 # Hugging Face persistence
 HF_TOKEN = os.getenv("HF_TOKEN")
-HF_DATASET_REPO = "JessicaKumar/voice-to-post-data"
+HF_DATASET_REPO = os.getenv("HF_DATASET_REPO", "JessicaKumar/voice-to-post-data")
 
 def download_db():
     """Downloads credentials.db from HF Dataset into /tmp/ and ensures write permissions."""

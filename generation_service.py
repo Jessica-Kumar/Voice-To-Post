@@ -1,4 +1,5 @@
 import os
+import asyncio
 import json
 import re
 from langchain_core.prompts import PromptTemplate
@@ -9,18 +10,19 @@ from newsapi import NewsApiClient
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 
-# Stable LLM with low temperature and top_p – remains unchanged
+# Higher temperature produces genuinely different post lengths, emoji usage,
+# hashtag counts, and hooks — which scoring.py can meaningfully differentiate.
 llm = ChatGoogleGenerativeAI(
     model="gemini-2.5-flash",
     google_api_key=GEMINI_API_KEY,
-    temperature=0.2,
-    top_p=0.1
+    temperature=0.85,
+    top_p=0.9
 )
 
-# Strict prompt (unchanged)
+# Strict prompt with mandatory diversity
 STRICT_PROMPT = PromptTemplate.from_template(
-    """You are an elite, highly logical Social Media Ghostwriter and Strategist.
-Your objective is to generate EXACTLY 5 distinct, high-quality social media posts based ONLY on the provided inputs.
+    """You are an elite Social Media Ghostwriter and Strategist.
+Your objective is to generate EXACTLY 5 DISTINCT social media posts based ONLY on the provided inputs.
 
 INPUT DATA:
 - Target Platform: {platform}
@@ -38,10 +40,12 @@ PLATFORM-SPECIFIC GUIDELINES:
 - **Twitter/X**: Strictly ≤ 280 characters. Short, punchy, impactful.
 - **LinkedIn**: Detailed and professional. Use line breaks for readability. Focused on networking and industry value.
 
-FORMATTING REQUIREMENTS:
-- Include exactly 2-3 highly relevant hashtags at the end.
-- Integrate 1-2 appropriate emojis naturally (!, ?, 🚀, 💡, 🔥, 🌍).
-- Do not include any introductory or concluding conversational text.
+MANDATORY DIVERSITY — each post MUST be structurally different:
+- Post 1: Bold statement hook. 2-3 hashtags. 1-2 emojis.
+- Post 2: Opens with a question. 1 hashtag only. No emojis.
+- Post 3: Storytelling / narrative style. 2 hashtags. 2-3 emojis.
+- Post 4: Data or insight-driven. Ends with a CTA. 3 hashtags.
+- Post 5: Very short and punchy (max 3 sentences). 1-2 hashtags. 1 emoji.
 
 STRICT OUTPUT FORMAT (API REQUIREMENT):
 You must return ONLY a valid JSON array containing exactly 5 objects. Each object must have a single key named "text".
@@ -72,7 +76,10 @@ async def generate_post_rag(
         try:
             newsapi = NewsApiClient(api_key=NEWS_API_KEY)
             query = transcript[:50]
-            headlines = newsapi.get_everything(q=query, language='en', sort_by='relevancy', page_size=3)
+            # Run sync NewsAPI call in a thread so the event loop is not blocked
+            headlines = await asyncio.to_thread(
+                newsapi.get_everything, q=query, language='en', sort_by='relevancy', page_size=3
+            )
             if headlines['status'] == 'ok' and headlines['totalResults'] > 0:
                 news_context = "\n\nRelevant Live News:\n" + "\n".join([f"- {a['title']}" for a in headlines['articles']])
         except Exception as e:

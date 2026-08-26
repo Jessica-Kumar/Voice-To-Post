@@ -1,29 +1,43 @@
 # --- Core API & Server ---
-fastapi
-uvicorn
-pydantic
-python-multipart
-httpx
+fastapi==0.115.6
+uvicorn==0.34.0
+pydantic==2.10.4
+python-multipart==0.0.20
+httpx==0.28.1
 
 # --- AI, LLM & RAG Pipeline ---
-faiss-cpu
-sentence-transformers
-langchain
-langchain-google-genai
+faiss-cpu==1.9.0
+sentence-transformers==3.3.1
+langchain-core==0.3.29
+langchain-google-genai==2.0.8
 google-generativeai>=0.5.2
-huggingface_hub
+huggingface_hub>=0.26.0
 
 # --- Database & Security ---
-sqlalchemy
-cryptography
+sqlalchemy==2.0.36
+cryptography==44.0.0
 
 # --- External APIs & File Processing ---
-newsapi-python
+newsapi-python==0.2.7
 tweepy>=4.14.0
-python-dotenv
+python-dotenv==1.0.1
 PyPDF2>=3.0.0
 
 # --- Scheduling & Time Management ---
 dateparser==1.2.0
 apscheduler==3.10.4
 pytz
+
+# --- Authentication & Security ---
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+
+# --- Rate Limiting ---
+slowapi==0.1.9
+
+# --- Image Processing ---
+Pillow==11.0.0
+
+# --- Content Moderation ---
+better-profanity==0.7.0
