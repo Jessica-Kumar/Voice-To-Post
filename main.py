@@ -941,17 +941,18 @@ async def publish_post(
     request: Request,
     platform: str = Form(...),
     post_text: str = Form(...),
+    uid: str = Depends(resolve_user_id),
     db: Session = Depends(get_db)
 ):
     post_text = post_text.replace("\\n", "\n")
     platform_key = platform.lower()
-    creds = db.query(SocialCreds).filter(SocialCreds.user_id == user_id).first()
+    creds = db.query(SocialCreds).filter(SocialCreds.user_id == uid).first()
     if not creds:
-        raise HTTPException(status_code=404, detail=f"No credentials found for user {user_id}.")
+        raise HTTPException(status_code=404, detail=f"No credentials found for user {uid}.")
     result = await social_publisher.publish_to_platform(platform_key, post_text, creds)
     if result and result.get("status") == "success":
         memory_text = f"[{platform_key.capitalize()} Post History]: {post_text}"
-        vector_store.add_text_to_index([memory_text], user_id=user_id)
+        vector_store.add_text_to_index([memory_text], user_id=uid)
     return result
 
 # ==================== Upload Brand Policy ====================
